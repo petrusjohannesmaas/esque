@@ -120,6 +120,22 @@ func (c *Config) Rename(old, new string) error {
 	return nil
 }
 
+// SetS3 sets a project's S3 setup, keeping the stored secret key when the new
+// one is empty.
+func (c *Config) SetS3(name string, setup S3Setup) error {
+	for i := range c.Projects {
+		if c.Projects[i].Name != name {
+			continue
+		}
+		if setup.SecretKey == "" && c.Projects[i].S3 != nil {
+			setup.SecretKey = c.Projects[i].S3.SecretKey
+		}
+		c.Projects[i].S3 = &setup
+		return nil
+	}
+	return fmt.Errorf("project %q not found", name)
+}
+
 // Remove drops a project by name.
 func (c *Config) Remove(name string) error {
 	for i := range c.Projects {

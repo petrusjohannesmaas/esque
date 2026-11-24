@@ -16,6 +16,8 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/petrusjohannesmaas/esque/internal/config"
+	"github.com/petrusjohannesmaas/esque/internal/remote"
+	"github.com/petrusjohannesmaas/esque/internal/remote/remotetest"
 	"github.com/petrusjohannesmaas/esque/internal/tui"
 )
 
@@ -214,7 +216,11 @@ func TestRemoveProjectAfterConfirm(t *testing.T) {
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	model, err := tui.New(cfgPath, tui.Deps{})
+	opens := 0
+	model, err := tui.New(cfgPath, tui.Deps{OpenStore: func(config.S3Setup) (remote.Store, error) {
+		opens++
+		return remotetest.NewMemory("blog"), nil
+	}})
 	if err != nil {
 		t.Fatalf("tui.New: %v", err)
 	}
@@ -274,6 +280,221 @@ func TestRemoveProjectAfterConfirm(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "app.db")); err != nil {
 		t.Errorf("database file is gone after the removal: %v", err)
+	}
+	if opens != 0 {
+		t.Errorf("removing a project opened a store %d times, want 0", opens)
+	}
+}
+
+func TestActionsNeedS3Setup(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	cfgPath := filepath.Join(t.TempDir(), "esque", "config.json")
+	cfg := &config.Config{Projects: []config.Project{{
+		Name:       "blog",
+		Dir:        dir,
+		DB:         "app.db",
+		Passphrase: "s3cret",
+	}}}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	opens := 0
+	model, err := tui.New(cfgPath, tui.Deps{OpenStore: func(config.S3Setup) (remote.Store, error) {
+		opens++
+		return remotetest.NewMemory("blog"), nil
+	}})
+	if err != nil {
+		t.Fatalf("tui.New: %v", err)
+	}
+	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(100, 40))
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("> blog"))
+
+	for i := range 3 {
+		if i > 0 {
+			tm.Send(special(tea.KeyEscape))
+			waitFor(t, tm, &seen, contains("Add project"))
+		}
+		tm.Send(special(tea.KeyEnter))
+		waitFor(t, tm, &seen, contains("Reveal passphrase"))
+		for range i {
+			tm.Send(special(tea.KeyDown))
+		}
+		tm.Send(special(tea.KeyEnter))
+		waitFor(t, tm, &seen, contains("Set up S3 first"))
+	}
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+
+	if opens != 0 {
+		t.Errorf("OpenStore called %d times without a setup, want 0", opens)
+	}
+}
+
+func TestS3SetupSavedWithHiddenSecret(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	cfgPath := filepath.Join(t.TempDir(), "esque", "config.json")
+	cfg := &config.Config{Projects: []config.Project{{
+		Name:       "blog",
+		Dir:        dir,
+		DB:         "app.db",
+		Passphrase: "s3cret",
+	}}}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	model, err := tui.New(cfgPath, tui.Deps{})
+	if err != nil {
+		t.Fatalf("tui.New: %v", err)
+	}
+	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(100, 40))
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("> blog"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+	for range 3 {
+		tm.Send(special(tea.KeyDown))
+	}
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Endpoint"))
+
+	for i, value := range []string{"https://s3.example.com", "af-south-1", "backups", "srv1/blog", "AKID1", "topsecret"} {
+		if i > 0 {
+			tm.Send(special(tea.KeyTab))
+		}
+		tm.Type(value)
+	}
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+
+	saved := readConfig(t, cfgPath)
+	if len(saved.Projects) != 1 {
+		t.Fatalf("config has %d projects, want 1", len(saved.Projects))
+	}
+	s3 := saved.Projects[0].S3
+	if s3 == nil {
+		t.Fatal("project has no S3 setup after the form")
+	}
+	want := config.S3Setup{
+		Endpoint:    "https://s3.example.com",
+		Region:      "af-south-1",
+		Bucket:      "backups",
+		Prefix:      "srv1/blog",
+		AccessKeyID: "AKID1",
+		SecretKey:   "topsecret",
+	}
+	if *s3 != want {
+		t.Errorf("saved S3 setup = %+v, want %+v", *s3, want)
+	}
+	if bytes.Contains(seen.Bytes(), []byte("topsecret")) {
+		t.Error("program output contains the secret key")
+	}
+}
+
+func TestS3EditKeepsSecretUnlessRetyped(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	cfgPath := filepath.Join(t.TempDir(), "esque", "config.json")
+	cfg := &config.Config{Projects: []config.Project{{
+		Name:       "blog",
+		Dir:        dir,
+		DB:         "app.db",
+		Passphrase: "s3cret",
+		S3: &config.S3Setup{
+			Endpoint:    "https://s3.example.com",
+			Region:      "af-south-1",
+			Bucket:      "old",
+			Prefix:      "srv1/blog",
+			AccessKeyID: "AKID1",
+			SecretKey:   "topsecret",
+		},
+	}}}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	model, err := tui.New(cfgPath, tui.Deps{})
+	if err != nil {
+		t.Fatalf("tui.New: %v", err)
+	}
+	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(100, 40))
+	var seen bytes.Buffer
+
+	enterProject := func() {
+		t.Helper()
+		tm.Send(special(tea.KeyEnter))
+		waitFor(t, tm, &seen, contains("Reveal passphrase"))
+		for range 3 {
+			tm.Send(special(tea.KeyDown))
+		}
+		tm.Send(special(tea.KeyEnter))
+		waitFor(t, tm, &seen, contains("Endpoint"))
+	}
+
+	waitFor(t, tm, &seen, contains("> blog"))
+	enterProject()
+
+	tm.Send(special(tea.KeyTab))
+	tm.Send(special(tea.KeyTab))
+	tm.Send(special(tea.KeyCtrlU))
+	tm.Type("new")
+	for range 3 {
+		tm.Send(special(tea.KeyTab))
+	}
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+
+	first := readConfig(t, cfgPath).Projects[0].S3
+	if first == nil {
+		t.Fatal("project has no S3 setup after the edit")
+	}
+	if first.Bucket != "new" {
+		t.Errorf("saved bucket = %q, want new", first.Bucket)
+	}
+	if first.SecretKey != "topsecret" {
+		t.Errorf("saved secret = %q, want the old secret kept", first.SecretKey)
+	}
+
+	tm.Send(special(tea.KeyEscape))
+	waitFor(t, tm, &seen, contains("Add project"))
+	enterProject()
+	for range 5 {
+		tm.Send(special(tea.KeyTab))
+	}
+	tm.Type("newsecret")
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+
+	second := readConfig(t, cfgPath).Projects[0].S3
+	if second == nil {
+		t.Fatal("project has no S3 setup after the second edit")
+	}
+	if second.Bucket != "new" {
+		t.Errorf("saved bucket = %q, want new", second.Bucket)
+	}
+	if second.SecretKey != "newsecret" {
+		t.Errorf("saved secret = %q, want newsecret", second.SecretKey)
+	}
+	for _, secret := range []string{"topsecret", "newsecret"} {
+		if bytes.Contains(seen.Bytes(), []byte(secret)) {
+			t.Errorf("program output contains %q", secret)
+		}
 	}
 }
 

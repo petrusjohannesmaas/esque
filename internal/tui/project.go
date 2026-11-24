@@ -78,6 +78,12 @@ func (s *projectView) update(msg tea.Msg) (screen, tea.Cmd) {
 		}
 	case "enter":
 		switch s.cursor {
+		case actionBackup, actionListBackups, actionRestore:
+			if s.m.cfg.Projects[s.index].S3 == nil {
+				s.status = "Set up S3 first"
+			}
+		case actionS3:
+			return newS3Form(s.m, s.index), nil
 		case actionReveal:
 			s.mode = projectReveal
 		case actionRename:
@@ -163,6 +169,9 @@ func (s *projectView) view() string {
 	fmt.Fprintf(&b, "%s\n\n", p.Name)
 	for i, action := range projectActionNames {
 		fmt.Fprintf(&b, "%s %s\n", cursorMark(i == s.cursor), action)
+	}
+	if s.status != "" {
+		fmt.Fprintf(&b, "\n%s\n", s.status)
 	}
 	b.WriteString("\nesc back • enter choose\n")
 	return b.String()

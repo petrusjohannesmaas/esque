@@ -4,10 +4,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/petrusjohannesmaas/esque/internal/config"
+	"github.com/petrusjohannesmaas/esque/internal/remote"
 )
 
 // Deps holds what the screens need from outside.
-type Deps struct{}
+type Deps struct {
+	OpenStore func(config.S3Setup) (remote.Store, error)
+}
 
 // Model is the root of the terminal interface.
 type Model struct {
