@@ -39,6 +39,7 @@ func (s *menu) update(msg tea.Msg) (screen, tea.Cmd) {
 		if s.cursor == last {
 			return newAddProject(s.m), nil
 		}
+		return newProjectView(s.m, s.cursor), nil
 	}
 	return s, nil
 }

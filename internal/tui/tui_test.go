@@ -88,6 +88,195 @@ func readConfig(t *testing.T, cfgPath string) *config.Config {
 	return cfg
 }
 
+func TestProjectViewListsActions(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	tm, _ := newApp(t)
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("Add project"))
+	addProject(t, tm, &seen, dir, "s3cret")
+	waitFor(t, tm, &seen, contains("> blog"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+
+	for _, action := range []string{"Back up", "List backups", "Restore", "S3 setup", "Reveal passphrase", "Rename", "Remove"} {
+		if !bytes.Contains(seen.Bytes(), []byte(action)) {
+			t.Errorf("output does not show %q", action)
+		}
+	}
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
+func TestRevealPassphraseUntilKey(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	tm, _ := newApp(t)
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("Add project"))
+	addProject(t, tm, &seen, dir, "s3cret")
+	waitFor(t, tm, &seen, contains("> blog"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+	for i := 0; i < 4; i++ {
+		tm.Send(special(tea.KeyDown))
+	}
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("s3cret"))
+
+	tm.Send(key('x'))
+	var final []byte
+	waitFor(t, tm, &seen, func(b []byte) bool {
+		if bytes.Contains(b, []byte("Back up")) {
+			final = append([]byte(nil), b...)
+			return true
+		}
+		return false
+	})
+	if bytes.Contains(final, []byte("s3cret")) {
+		t.Errorf("passphrase remains visible after a key press")
+	}
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
+func TestRenameShowsNewName(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	tm, cfgPath := newApp(t)
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("Add project"))
+	addProject(t, tm, &seen, dir, "s3cret")
+	waitFor(t, tm, &seen, contains("> blog"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+	for i := 0; i < 5; i++ {
+		tm.Send(special(tea.KeyDown))
+	}
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("New name"))
+	tm.Type("journal")
+	tm.Send(special(tea.KeyEnter))
+
+	var list []byte
+	waitFor(t, tm, &seen, func(b []byte) bool {
+		if bytes.Contains(b, []byte("> journal")) {
+			list = append([]byte(nil), b...)
+			return true
+		}
+		return false
+	})
+	if bytes.Contains(list, []byte("blog")) {
+		t.Errorf("list still shows blog after the rename")
+	}
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+
+	cfg := readConfig(t, cfgPath)
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("config has %d projects, want 1", len(cfg.Projects))
+	}
+	if got := cfg.Projects[0].Name; got != "journal" {
+		t.Errorf("saved name = %q, want journal", got)
+	}
+}
+
+func TestRemoveProjectAfterConfirm(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	cfgPath := filepath.Join(t.TempDir(), "esque", "config.json")
+	cfg := &config.Config{Projects: []config.Project{{
+		Name:       "blog",
+		Dir:        dir,
+		DB:         "app.db",
+		Passphrase: "s3cret",
+		S3: &config.S3Setup{
+			Endpoint:    "https://s3.example.com",
+			Region:      "af-south-1",
+			Bucket:      "backups",
+			Prefix:      "blog",
+			AccessKeyID: "key",
+			SecretKey:   "secret",
+		},
+	}}}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	model, err := tui.New(cfgPath, tui.Deps{})
+	if err != nil {
+		t.Fatalf("tui.New: %v", err)
+	}
+	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(100, 40))
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("> blog"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+	for i := 0; i < 6; i++ {
+		tm.Send(special(tea.KeyDown))
+	}
+	tm.Send(special(tea.KeyEnter))
+
+	var confirm []byte
+	waitFor(t, tm, &seen, func(b []byte) bool {
+		if bytes.Contains(b, []byte("Remove blog?")) {
+			confirm = append([]byte(nil), b...)
+			return true
+		}
+		return false
+	})
+	if !bytes.Contains(confirm, []byte("passphrase and S3 setup are deleted too")) {
+		t.Errorf("confirmation does not say the passphrase is deleted too: %q", confirm)
+	}
+
+	tm.Send(key('y'))
+	var list []byte
+	waitFor(t, tm, &seen, func(b []byte) bool {
+		if bytes.Contains(b, []byte("Add project")) {
+			list = append([]byte(nil), b...)
+			return true
+		}
+		return false
+	})
+	if bytes.Contains(list, []byte("blog")) {
+		t.Errorf("list still shows blog after the removal")
+	}
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+
+	saved := readConfig(t, cfgPath)
+	if len(saved.Projects) != 0 {
+		t.Fatalf("config has %d projects, want none", len(saved.Projects))
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	for _, secret := range []string{"s3cret", "secret"} {
+		if bytes.Contains(raw, []byte(secret)) {
+			t.Errorf("config still holds %q after the removal", secret)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "app.db")); err != nil {
+		t.Errorf("database file is gone after the removal: %v", err)
+	}
+}
+
 func TestAddProjectAppearsInList(t *testing.T) {
 	dir := t.TempDir()
 	createSQLite(t, dir, "app.db")

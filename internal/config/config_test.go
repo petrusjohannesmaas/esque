@@ -56,6 +56,33 @@ func TestSaveWritesOwnerOnlyFile(t *testing.T) {
 	}
 }
 
+func TestRenameRefusesUsedName(t *testing.T) {
+	cfg := &config.Config{}
+	blog := config.Project{Name: "blog", Dir: "/srv/blog", DB: "blog.sqlite", Passphrase: "s3cret"}
+	shop := config.Project{Name: "shop", Dir: "/srv/shop", DB: "shop.sqlite", Passphrase: "sh0p"}
+	if err := cfg.Add(blog); err != nil {
+		t.Fatalf("Add blog: %v", err)
+	}
+	if err := cfg.Add(shop); err != nil {
+		t.Fatalf("Add shop: %v", err)
+	}
+
+	err := cfg.Rename("blog", "shop")
+	if !errors.Is(err, config.ErrNameTaken) {
+		t.Fatalf("Rename blog to shop: got %v, want config.ErrNameTaken", err)
+	}
+	if cfg.Projects[0].Name != "blog" || cfg.Projects[1].Name != "shop" {
+		t.Errorf("names after refused rename = %q, %q, want blog, shop", cfg.Projects[0].Name, cfg.Projects[1].Name)
+	}
+
+	if err := cfg.Rename("blog", "journal"); err != nil {
+		t.Fatalf("Rename blog to journal: %v", err)
+	}
+	if cfg.Projects[0].Name != "journal" {
+		t.Errorf("name after rename = %q, want journal", cfg.Projects[0].Name)
+	}
+}
+
 func TestAddRefusesUsedName(t *testing.T) {
 	cfg := &config.Config{}
 	blog := config.Project{Name: "blog", Dir: "/srv/blog", DB: "blog.sqlite", Passphrase: "s3cret"}

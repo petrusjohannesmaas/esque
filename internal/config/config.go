@@ -99,6 +99,38 @@ func (c *Config) Add(p Project) error {
 	return nil
 }
 
+// Rename gives a project a new name, if the name is free and valid.
+func (c *Config) Rename(old, new string) error {
+	if err := validateName(new); err != nil {
+		return err
+	}
+	index := -1
+	for i := range c.Projects {
+		if c.Projects[i].Name == old {
+			index = i
+		}
+		if c.Projects[i].Name == new && c.Projects[i].Name != old {
+			return ErrNameTaken
+		}
+	}
+	if index < 0 {
+		return fmt.Errorf("project %q not found", old)
+	}
+	c.Projects[index].Name = new
+	return nil
+}
+
+// Remove drops a project by name.
+func (c *Config) Remove(name string) error {
+	for i := range c.Projects {
+		if c.Projects[i].Name == name {
+			c.Projects = append(c.Projects[:i], c.Projects[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("project %q not found", name)
+}
+
 func validateName(name string) error {
 	if name == "" {
 		return errors.New("project name is empty")
