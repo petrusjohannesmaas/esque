@@ -51,7 +51,7 @@ func newBackupScreen(m *Model, index int) *backupScreen {
 func (s *backupScreen) update(msg tea.Msg) (screen, tea.Cmd) {
 	if done, ok := msg.(backupDoneMsg); ok {
 		if done.err != nil {
-			s.status = describe(done.err, s.endpoint())
+			s.status = describe(done.err, s.m.endpoint(s.index))
 			s.phase = backupNaming
 			s.input.Focus()
 			return s, textinput.Blink
@@ -83,18 +83,11 @@ func (s *backupScreen) update(msg tea.Msg) (screen, tea.Cmd) {
 	return s, cmd
 }
 
-func (s *backupScreen) endpoint() string {
-	if setup := s.m.cfg.Projects[s.index].S3; setup != nil {
-		return setup.Endpoint
-	}
-	return ""
-}
-
 func (s *backupScreen) start(name string) tea.Cmd {
 	project := s.m.cfg.Projects[s.index]
 	store, err := s.m.deps.OpenStore(*project.S3)
 	if err != nil {
-		s.status = describe(err, s.endpoint())
+		s.status = describe(err, s.m.endpoint(s.index))
 		return nil
 	}
 	s.phase = backupWorking
@@ -116,6 +109,10 @@ func describe(err error, endpoint string) string {
 		return "Cannot reach S3 at " + endpoint
 	case errors.Is(err, remote.ErrNotFound):
 		return "S3 object not found"
+	case errors.Is(err, backup.ErrBadBackup):
+		return backup.ErrBadBackup.Error()
+	case errors.Is(err, backup.ErrFileExists):
+		return err.Error()
 	}
 	return err.Error()
 }

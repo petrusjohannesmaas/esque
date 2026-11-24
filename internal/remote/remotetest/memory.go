@@ -13,9 +13,10 @@ import (
 
 // Memory is an in-memory remote.Store for tests.
 type Memory struct {
-	Prefix  string
-	Now     func() time.Time
-	FailPut error
+	Prefix   string
+	Now      func() time.Time
+	FailPut  error
+	FailList error
 
 	objects map[string]object
 }
@@ -32,7 +33,18 @@ func NewMemory(prefix string) *Memory {
 
 // WithPrefix returns a store on the same objects under another prefix.
 func (m *Memory) WithPrefix(prefix string) *Memory {
-	return &Memory{Prefix: prefix, Now: m.Now, FailPut: m.FailPut, objects: m.objects}
+	return &Memory{Prefix: prefix, Now: m.Now, FailPut: m.FailPut, FailList: m.FailList, objects: m.objects}
+}
+
+// SetModified sets the modified time List reports for an object.
+func (m *Memory) SetModified(name string, modified time.Time) {
+	key := m.key(name)
+	obj, ok := m.objects[key]
+	if !ok {
+		return
+	}
+	obj.modified = modified
+	m.objects[key] = obj
 }
 
 func (m *Memory) key(name string) string {
@@ -71,6 +83,9 @@ func (m *Memory) Exists(_ context.Context, name string) (bool, error) {
 }
 
 func (m *Memory) List(context.Context) ([]remote.Object, error) {
+	if m.FailList != nil {
+		return nil, m.FailList
+	}
 	folder := m.folder()
 	list := make([]remote.Object, 0, len(m.objects))
 	for key, obj := range m.objects {

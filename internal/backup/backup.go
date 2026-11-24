@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/petrusjohannesmaas/esque/internal/config"
@@ -23,6 +25,8 @@ var (
 	ErrBadName         = errors.New("backup name may use only letters, digits, -, _ and .")
 	ErrNameExists      = errors.New("backup name already exists")
 	ErrDatabaseMissing = errors.New("database file is missing")
+	ErrBadBackup       = errors.New("This backup cannot be restored with the project's passphrase, or it is damaged")
+	ErrFileExists      = errors.New("file already exists")
 )
 
 // namePattern is what a backup name may contain.
@@ -110,4 +114,89 @@ func Backup(ctx context.Context, project config.Project, name string, store remo
 		return none, fmt.Errorf("upload %s: %w", object, err)
 	}
 	return remote.Object{Name: object, Size: info.Size()}, nil
+}
+
+// List returns the backups under store's prefix, newest first.
+func List(ctx context.Context, store remote.Store) ([]remote.Object, error) {
+	objects, err := store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	backups := make([]remote.Object, 0, len(objects))
+	for _, obj := range objects {
+		if strings.HasSuffix(obj.Name, ".sqlite.enc") {
+			backups = append(backups, obj)
+		}
+	}
+	sort.Slice(backups, func(i, j int) bool {
+		return backups[i].Modified.After(backups[j].Modified)
+	})
+	return backups, nil
+}
+
+// Restore downloads one backup into destDir as <name>.sqlite and returns its
+// path.
+func Restore(ctx context.Context, project config.Project, name, destDir string, store remote.Store) (string, error) {
+	if err := ValidName(name); err != nil {
+		return "", err
+	}
+	object := name + ".sqlite.enc"
+	final := filepath.Join(destDir, name+".sqlite")
+	if _, err := os.Stat(final); err == nil {
+		return "", fmt.Errorf("%s: %w", final, ErrFileExists)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
+		return "", err
+	}
+
+	rc, err := store.Get(ctx, object)
+	if err != nil {
+		return "", fmt.Errorf("download %s: %w", object, err)
+	}
+	defer rc.Close()
+	downloaded, err := os.CreateTemp("", "esque-restore-*.enc")
+	if err != nil {
+		return "", err
+	}
+	downloadedPath := downloaded.Name()
+	defer os.Remove(downloadedPath)
+	if _, err := io.Copy(downloaded, rc); err != nil {
+		downloaded.Close()
+		return "", err
+	}
+	if err := downloaded.Close(); err != nil {
+		return "", err
+	}
+
+	plain, err := os.CreateTemp(destDir, "esque-restore-*.sqlite")
+	if err != nil {
+		return "", err
+	}
+	plainPath := plain.Name()
+	defer os.Remove(plainPath)
+	source, err := os.Open(downloadedPath)
+	if err != nil {
+		plain.Close()
+		return "", err
+	}
+	defer source.Close()
+	if err := crypt.Decrypt(plain, source, project.Passphrase); err != nil {
+		plain.Close()
+		if errors.Is(err, crypt.ErrDecrypt) {
+			return "", fmt.Errorf("%s: %w", object, ErrBadBackup)
+		}
+		return "", fmt.Errorf("decrypt %s: %w", object, err)
+	}
+	if err := plain.Close(); err != nil {
+		return "", err
+	}
+	if err := sqlitefile.Check(plainPath); err != nil {
+		return "", fmt.Errorf("%s: %w", object, ErrBadBackup)
+	}
+	if err := os.Rename(plainPath, final); err != nil {
+		return "", err
+	}
+	return final, nil
 }

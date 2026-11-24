@@ -68,6 +68,14 @@ func (m *Model) now() time.Time {
 	return time.Now()
 }
 
+// endpoint returns the project's S3 endpoint, or "" without a setup.
+func (m *Model) endpoint(index int) string {
+	if setup := m.cfg.Projects[index].S3; setup != nil {
+		return setup.Endpoint
+	}
+	return ""
+}
+
 // addProject saves a new project and returns to the menu.
 func (m *Model) addProject(p config.Project) error {
 	if err := m.cfg.Add(p); err != nil {

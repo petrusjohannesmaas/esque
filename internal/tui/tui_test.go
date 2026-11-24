@@ -15,9 +15,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/exp/teatest"
+	"github.com/dustin/go-humanize"
 	"github.com/muesli/termenv"
 	_ "modernc.org/sqlite"
 
+	"github.com/petrusjohannesmaas/esque/internal/backup"
 	"github.com/petrusjohannesmaas/esque/internal/config"
 	"github.com/petrusjohannesmaas/esque/internal/remote"
 	"github.com/petrusjohannesmaas/esque/internal/remote/remotetest"
@@ -755,4 +757,123 @@ func TestAddProjectWithNoSQLiteFile(t *testing.T) {
 	if !bytes.Contains(seen.Bytes(), []byte("No SQLite database found in "+dir)) {
 		t.Errorf("output does not show the missing database message")
 	}
+}
+
+// blogBackups opens a memory store holding blog's two backups, dated a day
+// apart.
+func blogBackups(t *testing.T, dir string) *remotetest.Memory {
+	t.Helper()
+	store := remotetest.NewMemory("blog")
+	project := config.Project{
+		Name:       "blog",
+		Dir:        dir,
+		DB:         "app.db",
+		Passphrase: "s3cret",
+		S3: &config.S3Setup{
+			Endpoint:    "https://s3.example.com",
+			Region:      "af-south-1",
+			Bucket:      "backups",
+			Prefix:      "blog",
+			AccessKeyID: "key",
+			SecretKey:   "secret",
+		},
+	}
+	ctx := context.Background()
+	for _, name := range []string{"blog-1", "blog-2"} {
+		if _, err := backup.Backup(ctx, project, name, store); err != nil {
+			t.Fatalf("Backup %s: %v", name, err)
+		}
+	}
+	store.SetModified("blog-1.sqlite.enc", time.Date(2026, 11, 1, 10, 0, 0, 0, time.Local))
+	store.SetModified("blog-2.sqlite.enc", time.Date(2026, 11, 2, 9, 15, 0, 0, time.Local))
+	return store
+}
+
+func TestListAndRestore(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	memory := blogBackups(t, dir)
+	now := time.Date(2026, 11, 25, 14, 30, 0, 0, time.Local)
+	tm := backupApp(t, dir, memory, now)
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("> blog"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+	tm.Send(special(tea.KeyDown))
+	tm.Send(special(tea.KeyEnter))
+
+	var frame []byte
+	waitFor(t, tm, &seen, func(b []byte) bool {
+		if bytes.Contains(b, []byte("2 November 2026 09:15")) {
+			frame = append([]byte(nil), b...)
+			return true
+		}
+		return false
+	})
+	newer := bytes.Index(frame, []byte("blog-2"))
+	older := bytes.Index(frame, []byte("blog-1"))
+	if newer < 0 || older < 0 {
+		t.Fatalf("list does not show both backups: %q", frame)
+	}
+	if newer > older {
+		t.Errorf("blog-2 is not above blog-1 in %q", frame)
+	}
+	list, err := memory.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var size int64
+	for _, obj := range list {
+		if obj.Name == "blog-2.sqlite.enc" {
+			size = obj.Size
+		}
+	}
+	if sizeStr := humanize.Bytes(uint64(size)); !bytes.Contains(frame, []byte(sizeStr)) {
+		t.Errorf("list does not show blog-2's size %q in %q", sizeStr, frame)
+	}
+
+	tm.Send(special(tea.KeyEscape))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+	tm.Send(special(tea.KeyDown))
+	tm.Send(special(tea.KeyDown))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("2 November 2026 09:15"))
+	tm.Send(special(tea.KeyEnter))
+
+	folder := filepath.Join(dir, "restored")
+	waitFor(t, tm, &seen, contains(folder))
+	tm.Send(special(tea.KeyEnter))
+	restored := filepath.Join(folder, "blog-2.sqlite")
+	waitFor(t, tm, &seen, contains(restored))
+	if _, err := os.Stat(restored); err != nil {
+		t.Errorf("restored file is missing: %v", err)
+	}
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
+func TestListShowsUnreachableS3(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	store := remotetest.NewMemory("blog")
+	store.FailList = remote.ErrUnreachable
+	now := time.Date(2026, 11, 25, 14, 30, 0, 0, time.Local)
+	tm := backupApp(t, dir, store, now)
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("> blog"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+	tm.Send(special(tea.KeyDown))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Cannot reach S3 at https://s3.example.com"))
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
 }

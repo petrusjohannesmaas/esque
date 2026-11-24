@@ -87,6 +87,8 @@ func (s *projectView) update(msg tea.Msg) (screen, tea.Cmd) {
 		case actionListBackups, actionRestore:
 			if s.m.cfg.Projects[s.index].S3 == nil {
 				s.status = "Set up S3 first"
+			} else {
+				return newBackupList(s.m, s.index)
 			}
 		case actionS3:
 			return newS3Form(s.m, s.index), nil
