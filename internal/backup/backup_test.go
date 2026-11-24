@@ -162,12 +162,13 @@ func TestBackupFailureLeavesNothing(t *testing.T) {
 
 	t.Run("missing database", func(t *testing.T) {
 		project := walProject(t)
+		tmp := t.TempDir()
+		t.Setenv("TMPDIR", tmp)
 		store := remotetest.NewMemory(project.S3.Prefix)
 		path := filepath.Join(project.Dir, project.DB)
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)
 		}
-		before := backupTemps(t)
 
 		_, err := backup.Backup(ctx, project, "blog-1", store)
 		if !errors.Is(err, backup.ErrDatabaseMissing) {
@@ -177,24 +178,25 @@ func TestBackupFailureLeavesNothing(t *testing.T) {
 			t.Errorf("error %q does not name %s", err, path)
 		}
 		assertEmptyStore(t, store)
-		if after := backupTemps(t); len(after) != len(before) {
-			t.Errorf("temp files left behind: %v", after)
+		if left := backupTemps(t); len(left) != 0 {
+			t.Errorf("temp files left behind: %v", left)
 		}
 	})
 
 	t.Run("upload refused", func(t *testing.T) {
 		project := walProject(t)
+		tmp := t.TempDir()
+		t.Setenv("TMPDIR", tmp)
 		store := remotetest.NewMemory(project.S3.Prefix)
 		store.FailPut = remote.ErrAccessDenied
-		before := backupTemps(t)
 
 		_, err := backup.Backup(ctx, project, "blog-1", store)
 		if !errors.Is(err, remote.ErrAccessDenied) {
 			t.Fatalf("Backup error = %v, want remote.ErrAccessDenied", err)
 		}
 		assertEmptyStore(t, store)
-		if after := backupTemps(t); len(after) != len(before) {
-			t.Errorf("temp files left behind: %v", after)
+		if left := backupTemps(t); len(left) != 0 {
+			t.Errorf("temp files left behind: %v", left)
 		}
 	})
 }
