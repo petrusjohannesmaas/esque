@@ -78,7 +78,13 @@ func (s *projectView) update(msg tea.Msg) (screen, tea.Cmd) {
 		}
 	case "enter":
 		switch s.cursor {
-		case actionBackup, actionListBackups, actionRestore:
+		case actionBackup:
+			if s.m.cfg.Projects[s.index].S3 == nil {
+				s.status = "Set up S3 first"
+			} else {
+				return newBackupScreen(s.m, s.index), nil
+			}
+		case actionListBackups, actionRestore:
 			if s.m.cfg.Projects[s.index].S3 == nil {
 				s.status = "Set up S3 first"
 			}

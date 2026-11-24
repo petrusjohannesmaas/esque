@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/petrusjohannesmaas/esque/internal/config"
@@ -10,6 +12,7 @@ import (
 // Deps holds what the screens need from outside.
 type Deps struct {
 	OpenStore func(config.S3Setup) (remote.Store, error)
+	Now       func() time.Time
 }
 
 // Model is the root of the terminal interface.
@@ -55,6 +58,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) View() string {
 	return m.screen.view()
+}
+
+// now returns the current local time, or the fixed clock the tests pass.
+func (m *Model) now() time.Time {
+	if m.deps.Now != nil {
+		return m.deps.Now()
+	}
+	return time.Now()
 }
 
 // addProject saves a new project and returns to the menu.

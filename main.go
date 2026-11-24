@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -17,7 +18,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "esque:", err)
 		os.Exit(1)
 	}
-	model, err := tui.New(path, tui.Deps{OpenStore: remote.NewS3})
+	model, err := tui.New(path, tui.Deps{OpenStore: remote.NewS3, Now: time.Now})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "esque:", err)
 		os.Exit(1)

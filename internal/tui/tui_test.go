@@ -2,10 +2,13 @@ package tui_test
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +91,177 @@ func readConfig(t *testing.T, cfgPath string) *config.Config {
 		t.Fatalf("Load: %v", err)
 	}
 	return cfg
+}
+
+// backupApp writes blog's config with an S3 setup and opens the app on a fixed
+// clock and the given store.
+func backupApp(t *testing.T, dir string, store remote.Store, now time.Time) *teatest.TestModel {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "esque", "config.json")
+	cfg := &config.Config{Projects: []config.Project{{
+		Name:       "blog",
+		Dir:        dir,
+		DB:         "app.db",
+		Passphrase: "s3cret",
+		S3: &config.S3Setup{
+			Endpoint:    "https://s3.example.com",
+			Region:      "af-south-1",
+			Bucket:      "backups",
+			Prefix:      "blog",
+			AccessKeyID: "key",
+			SecretKey:   "secret",
+		},
+	}}}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	model, err := tui.New(cfgPath, tui.Deps{
+		OpenStore: func(config.S3Setup) (remote.Store, error) { return store, nil },
+		Now:       func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("tui.New: %v", err)
+	}
+	return teatest.NewTestModel(t, model, teatest.WithInitialTermSize(100, 40))
+}
+
+func TestBackUpWithDefaultName(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	store := remotetest.NewMemory("blog")
+	now := time.Date(2026, 11, 25, 14, 30, 0, 0, time.Local)
+	tm := backupApp(t, dir, store, now)
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("> blog"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("blog-2026-11-25_14-30-00"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("blog-2026-11-25_14-30-00.sqlite.enc"))
+
+	list, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("store holds %d objects, want 1", len(list))
+	}
+	if list[0].Name != "blog-2026-11-25_14-30-00.sqlite.enc" {
+		t.Errorf("stored name = %q, want blog-2026-11-25_14-30-00.sqlite.enc", list[0].Name)
+	}
+	size := fmt.Sprintf("%d bytes", list[0].Size)
+	if !bytes.Contains(seen.Bytes(), []byte(size)) {
+		t.Errorf("screen does not show the backup size %q", size)
+	}
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
+// countingStore counts Put calls so a test can see the store was left alone.
+type countingStore struct {
+	remote.Store
+	puts int
+}
+
+func (c *countingStore) Put(ctx context.Context, name string, r io.Reader, size int64) error {
+	c.puts++
+	return c.Store.Put(ctx, name, r, size)
+}
+
+func TestBackUpAsksForAnotherName(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	memory := remotetest.NewMemory("blog")
+	existing := "blog-2026-11-25_14-30-00.sqlite.enc"
+	if err := memory.Put(context.Background(), existing, strings.NewReader("older backup"), int64(len("older backup"))); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	store := &countingStore{Store: memory}
+	now := time.Date(2026, 11, 25, 14, 30, 0, 0, time.Local)
+	tm := backupApp(t, dir, store, now)
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("> blog"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("blog-2026-11-25_14-30-00"))
+	tm.Send(special(tea.KeyEnter))
+
+	var frame []byte
+	waitFor(t, tm, &seen, func(b []byte) bool {
+		if bytes.Contains(b, []byte("already exists")) {
+			frame = append([]byte(nil), b...)
+			return true
+		}
+		return false
+	})
+	if store.puts != 0 {
+		t.Errorf("backup uploaded %d times with a taken name, want 0", store.puts)
+	}
+	if !bytes.Contains(frame, []byte("already exists")) {
+		t.Errorf("screen does not name the existing backup in %q", frame)
+	}
+	if !bytes.Contains(frame, []byte("blog-2026-11-25_14-30-00")) {
+		t.Errorf("name field not shown again in %q", frame)
+	}
+
+	rc, err := memory.Get(context.Background(), existing)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read object: %v", err)
+	}
+	if string(data) != "older backup" {
+		t.Errorf("stored backup changed to %q, want the older backup", data)
+	}
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
+func TestBackUpShowsMissingDatabase(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	path := filepath.Join(dir, "app.db")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	store := remotetest.NewMemory("blog")
+	now := time.Date(2026, 11, 25, 14, 30, 0, 0, time.Local)
+	tm := backupApp(t, dir, store, now)
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("> blog"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("blog-2026-11-25_14-30-00"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains(path))
+
+	list, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("store holds %d objects after a failed backup, want none", len(list))
+	}
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
 }
 
 func TestProjectViewListsActions(t *testing.T) {
