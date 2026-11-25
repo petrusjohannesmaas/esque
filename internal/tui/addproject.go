@@ -1,10 +1,9 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/petrusjohannesmaas/esque/internal/config"
@@ -15,73 +14,75 @@ const (
 	fieldName = iota
 	fieldDir
 	fieldPassphrase
-	fieldCount
 )
 
 type addProject struct {
 	m      *Model
-	inputs [fieldCount]textinput.Model
-	focus  int
+	form   fieldSet
 	status string
+	height int
 }
 
 func newAddProject(m *Model) *addProject {
-	s := &addProject{m: m}
-	for i := range s.inputs {
-		s.inputs[i] = textinput.New()
-		s.inputs[i].Width = 60
+	fields := []field{
+		newField("Name", "blog", ""),
+		newField("Directory", "/srv/blog", "Folder with the SQLite file."),
+		newField("Passphrase", "encrypts every backup",
+			"Keep a copy. Backups cannot be restored without it."),
 	}
-	s.inputs[fieldName].Placeholder = "blog"
-	s.inputs[fieldDir].Placeholder = "/srv/blog"
-	s.inputs[fieldPassphrase].EchoMode = textinput.EchoPassword
-	s.inputs[fieldName].Focus()
-	return s
+	fields[fieldPassphrase].secret()
+	return &addProject{m: m, form: fieldSet{fields: fields}}
+}
+
+func (s *addProject) init() tea.Cmd { return s.form.focusOn(s.form.focus) }
+
+func (s *addProject) setSize(width, height int) {
+	s.form.setWidth(width)
+	s.height = height
+}
+
+func (s *addProject) crumbs() []string { return []string{"Projects", "Add project"} }
+
+func (s *addProject) typing() bool { return true }
+
+func (s *addProject) keys() keyMap {
+	return keyMap{short: []key.Binding{formKeys.Next, formKeys.Prev, formKeys.Save, keyCancel}}
 }
 
 func (s *addProject) update(msg tea.Msg) (screen, tea.Cmd) {
-	key, ok := msg.(tea.KeyMsg)
-	if ok {
-		switch key.String() {
-		case "esc":
-			return newMenu(s.m), nil
-		case "tab":
-			return s, s.focusField((s.focus + 1) % fieldCount)
-		case "shift+tab":
-			return s, s.focusField((s.focus + fieldCount - 1) % fieldCount)
-		case "enter":
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch {
+		case key.Matches(k, keyCancel):
+			return newProjects(s.m), nil
+		case key.Matches(k, formKeys.Next):
+			return s, s.form.next()
+		case key.Matches(k, formKeys.Prev):
+			return s, s.form.prev()
+		case key.Matches(k, formKeys.Save):
 			return s.submit()
 		}
 	}
-	var cmd tea.Cmd
-	s.inputs[s.focus], cmd = s.inputs[s.focus].Update(msg)
-	return s, cmd
-}
-
-func (s *addProject) focusField(i int) tea.Cmd {
-	s.focus = i
-	for j := range s.inputs {
-		if j == i {
-			s.inputs[j].Focus()
-		} else {
-			s.inputs[j].Blur()
-		}
-	}
-	return textinput.Blink
+	return s, s.form.updateFocused(msg)
 }
 
 func (s *addProject) submit() (screen, tea.Cmd) {
-	name := strings.TrimSpace(s.inputs[fieldName].Value())
-	dir := strings.TrimSpace(s.inputs[fieldDir].Value())
-	passphrase := s.inputs[fieldPassphrase].Value()
+	f := s.form.fields
+	name := f[fieldName].value()
+	dir := f[fieldDir].value()
+	passphrase := f[fieldPassphrase].input.Value()
+	s.status = ""
+	s.form.clearErrors()
 
 	files, err := sqlitefile.Find(dir)
 	if err != nil {
-		s.status = err.Error()
-		return s, nil
+		f[fieldDir].err = err.Error()
+		_, cmd := s.form.focusFirstError()
+		return s, cmd
 	}
 	if len(files) == 0 {
-		s.status = "No SQLite database found in " + dir
-		return s, nil
+		f[fieldDir].err = "No SQLite database found in " + dir
+		_, cmd := s.form.focusFirstError()
+		return s, cmd
 	}
 	p := config.Project{Name: name, Dir: dir, Passphrase: passphrase}
 	if len(files) > 1 {
@@ -92,21 +93,21 @@ func (s *addProject) submit() (screen, tea.Cmd) {
 		s.status = err.Error()
 		return s, nil
 	}
-	return newMenu(s.m), nil
+	return newProjects(s.m), nil
 }
 
 func (s *addProject) view() string {
-	var b strings.Builder
-	b.WriteString("Add project\n\n")
-	labels := [fieldCount]string{"Name", "Directory", "Passphrase"}
-	for i := range s.inputs {
-		fmt.Fprintf(&b, "%s\n%s\n", labels[i], s.inputs[i].View())
-	}
+	room := s.height
+	var status string
 	if s.status != "" {
-		fmt.Fprintf(&b, "\n%s\n", s.status)
+		status = statusText(flashErr, s.status, s.form.width)
+		room -= strings.Count(status, "\n") + 2
 	}
-	b.WriteString("\ntab next • enter save • esc cancel\n")
-	return b.String()
+	out := s.form.view(room)
+	if status != "" {
+		out += "\n\n" + status
+	}
+	return out
 }
 
 // picker asks which SQLite file in the directory the project uses.
@@ -115,45 +116,62 @@ type picker struct {
 	project config.Project
 	files   []string
 	cursor  int
+	width   int
 }
 
 func newPicker(form *addProject, project config.Project, files []string) *picker {
 	return &picker{form: form, project: project, files: files}
 }
 
+func (s *picker) init() tea.Cmd { return nil }
+
+func (s *picker) setSize(width, _ int) { s.width = width }
+
+func (s *picker) crumbs() []string { return []string{"Projects", "Add project", "Database"} }
+
+func (s *picker) typing() bool { return false }
+
+func (s *picker) keys() keyMap {
+	return keyMap{short: []key.Binding{keyMove, pickerKeys.Choose, keyBack}}
+}
+
 func (s *picker) update(msg tea.Msg) (screen, tea.Cmd) {
-	key, ok := msg.(tea.KeyMsg)
+	k, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return s, nil
 	}
-	switch key.String() {
-	case "esc":
+	switch {
+	case key.Matches(k, keyBack):
 		return s.form, nil
-	case "up", "k":
+	case key.Matches(k, keyUp):
 		if s.cursor > 0 {
 			s.cursor--
 		}
-	case "down", "j":
+	case key.Matches(k, keyDown):
 		if s.cursor < len(s.files)-1 {
 			s.cursor++
 		}
-	case "enter":
+	case key.Matches(k, pickerKeys.Choose):
 		s.project.DB = s.files[s.cursor]
 		if err := s.form.m.addProject(s.project); err != nil {
 			s.form.status = err.Error()
 			return s.form, nil
 		}
-		return newMenu(s.form.m), nil
+		return newProjects(s.form.m), nil
 	}
 	return s, nil
 }
 
 func (s *picker) view() string {
 	var b strings.Builder
-	b.WriteString("Choose the SQLite database file\n\n")
+	b.WriteString(titleStyle.Render("Choose a database") + "\n")
+	b.WriteString(mutedStyle.Render(truncate("in "+s.project.Dir, s.width)) + "\n\n")
 	for i, file := range s.files {
-		fmt.Fprintf(&b, "%s %s\n", cursorMark(i == s.cursor), file)
+		name := file
+		if i == s.cursor {
+			name = selectedStyle.Render(file)
+		}
+		b.WriteString(truncate(marker(i == s.cursor)+name, s.width) + "\n")
 	}
-	b.WriteString("\nup/down move • enter choose • esc back\n")
 	return b.String()
 }
