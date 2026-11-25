@@ -351,7 +351,7 @@ func TestRenameKeepsOldNameWhenSaveFails(t *testing.T) {
 	waitFor(t, tm, &seen, contains("New name"))
 	tm.Type("site")
 	tm.Send(special(tea.KeyEnter))
-	waitFor(t, tm, &seen, contains("permission"))
+	waitFor(t, tm, &seen, contains(".config-"))
 
 	tm.Send(special(tea.KeyEsc))
 	tm.Send(special(tea.KeyEsc))
