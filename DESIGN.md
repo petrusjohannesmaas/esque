@@ -31,6 +31,7 @@ An endpoint without a scheme means https.
 - A backup name uses letters, digits, `-`, `_` and `.`. The default is `<project>-YYYY-MM-DD_HH-MM-SS` in local time. Esque refuses a name that already exists under the prefix.
 - A restore refuses to overwrite an existing file in the target folder.
 - Only `.sqlite.enc` objects directly under the prefix count as backups.
+- The `tui` screens change the config only through `Model.change`, which saves a copy and keeps it only when the save succeeds, so memory never gets ahead of the file. (25 November 2026, #1)
 
 ## Tests
 
