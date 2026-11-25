@@ -152,19 +152,6 @@ func Restore(ctx context.Context, project config.Project, name, destDir string, 
 		return "", fmt.Errorf("download %s: %w", object, err)
 	}
 	defer rc.Close()
-	downloaded, err := os.CreateTemp("", "esque-restore-*.enc")
-	if err != nil {
-		return "", err
-	}
-	downloadedPath := downloaded.Name()
-	defer os.Remove(downloadedPath)
-	if _, err := io.Copy(downloaded, rc); err != nil {
-		downloaded.Close()
-		return "", err
-	}
-	if err := downloaded.Close(); err != nil {
-		return "", err
-	}
 
 	plain, err := os.CreateTemp(destDir, "esque-restore-*.sqlite")
 	if err != nil {
@@ -172,13 +159,7 @@ func Restore(ctx context.Context, project config.Project, name, destDir string, 
 	}
 	plainPath := plain.Name()
 	defer os.Remove(plainPath)
-	source, err := os.Open(downloadedPath)
-	if err != nil {
-		plain.Close()
-		return "", err
-	}
-	defer source.Close()
-	if err := crypt.Decrypt(plain, source, project.Passphrase); err != nil {
+	if err := crypt.Decrypt(plain, rc, project.Passphrase); err != nil {
 		plain.Close()
 		if errors.Is(err, crypt.ErrDecrypt) {
 			return "", fmt.Errorf("%s: %w", object, ErrBadBackup)

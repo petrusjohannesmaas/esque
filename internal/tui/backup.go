@@ -111,8 +111,6 @@ func describe(err error, endpoint string) string {
 		return "S3 object not found"
 	case errors.Is(err, backup.ErrBadBackup):
 		return backup.ErrBadBackup.Error()
-	case errors.Is(err, backup.ErrFileExists):
-		return err.Error()
 	}
 	return err.Error()
 }
