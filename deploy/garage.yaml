@@ -1,0 +1,57 @@
+# Garage, an S3-compatible server, for trying Esque against real S3 in the local k3s cluster.
+# Setup steps are in DESIGN.md under "Testing against Garage".
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: garage-config, namespace: esque}
+data:
+  garage.toml: |
+    metadata_dir = "/var/lib/garage/meta"
+    data_dir = "/var/lib/garage/data"
+    db_engine = "sqlite"
+    replication_factor = 1
+    rpc_bind_addr = "[::]:3901"
+    rpc_public_addr = "127.0.0.1:3901"
+
+    [s3_api]
+    s3_region = "garage"
+    api_bind_addr = "[::]:3900"
+    root_domain = ".s3.garage.localhost"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: garage-data, namespace: esque}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: garage, namespace: esque}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: garage}}
+  template:
+    metadata: {labels: {app: garage}}
+    spec:
+      containers:
+      - name: garage
+        image: dxflrs/garage:v2.6.0
+        ports: [{containerPort: 3900, name: s3}]
+        env:
+        - name: GARAGE_RPC_SECRET
+          valueFrom: {secretKeyRef: {name: garage-rpc, key: secret}}
+        resources: {limits: {memory: 256Mi}}
+        volumeMounts:
+        - {name: config, mountPath: /etc/garage.toml, subPath: garage.toml}
+        - {name: data, mountPath: /var/lib/garage}
+      volumes:
+      - {name: config, configMap: {name: garage-config}}
+      - {name: data, persistentVolumeClaim: {claimName: garage-data}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: garage, namespace: esque}
+spec:
+  selector: {app: garage}
+  ports: [{name: s3, port: 3900, targetPort: 3900}]

@@ -39,3 +39,22 @@ An endpoint without a scheme means https.
 - The minio adapter runs the `remotetest` contract suite against `gofakes3` in an `httptest` server.
 - One test: `go test ./internal/<pkg> -run TestName`
 - All suites, through the queue: `test-queue submit light 'go mod download && go vet ./... && go test ./...'`
+
+### Testing against Garage
+
+Garage v2.6.0 is the real S3 service Esque has been tested with (25 November 2026, #15). `deploy/garage.yaml` runs it in the `esque` namespace in k3s: one node, replication factor 1, a 1 GiB volume and region `garage`. The RPC secret comes from the `garage-rpc` Secret, so the manifest holds no secrets. Set it up once:
+
+```bash
+kubectl create namespace esque
+kubectl -n esque create secret generic garage-rpc --from-literal=secret="$(openssl rand -hex 32)"
+kubectl apply -f deploy/garage.yaml
+kubectl -n esque rollout status deploy/garage
+g="kubectl -n esque exec deploy/garage -- /garage"
+$g layout assign -z dc1 -c 1G "$($g node id -q | cut -d@ -f1)"
+$g layout apply --version 1
+$g bucket create esque-backups
+$g key create esque-key          # prints the key ID and secret key
+$g bucket allow --read --write --owner esque-backups --key esque-key
+```
+
+Reach it with `kubectl -n esque port-forward svc/garage 8117:3900 --address 127.0.0.1` (port 8117 is esque's in `dev-port`). A port-forward ends with its pod, so start it again after the pod is replaced. Run Esque with `XDG_CONFIG_HOME` set to a spare folder so the test project stays out of the real config, and give the project endpoint `http://127.0.0.1:8117`, region `garage`, bucket `esque-backups` and the key from `garage key create`. `kubectl delete namespace esque` removes Garage and its data.
