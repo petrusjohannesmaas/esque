@@ -78,8 +78,20 @@ func (m *Model) endpoint(index int) string {
 
 // addProject saves a new project and returns to the menu.
 func (m *Model) addProject(p config.Project) error {
-	if err := m.cfg.Add(p); err != nil {
+	return m.change(func(cfg *config.Config) error { return cfg.Add(p) })
+}
+
+// change applies fn to a copy of the config and saves the copy. The model
+// keeps the copy only when both succeed, so a failed save leaves the config in
+// memory as it is on disk.
+func (m *Model) change(fn func(*config.Config) error) error {
+	next := m.cfg.Clone()
+	if err := fn(next); err != nil {
 		return err
 	}
-	return config.Save(m.cfgPath, m.cfg)
+	if err := config.Save(m.cfgPath, next); err != nil {
+		return err
+	}
+	m.cfg = next
+	return nil
 }

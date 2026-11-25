@@ -327,6 +327,54 @@ func TestRevealPassphraseUntilKey(t *testing.T) {
 	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
 }
 
+func TestRenameKeepsOldNameWhenSaveFails(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	tm, cfgPath := newApp(t)
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("Add project"))
+	addProject(t, tm, &seen, dir, "s3cret")
+	waitFor(t, tm, &seen, contains("> blog"))
+	cfgDir := filepath.Dir(cfgPath)
+	if err := os.Chmod(cfgDir, 0o500); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(cfgDir, 0o700) })
+
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+	for i := 0; i < 5; i++ {
+		tm.Send(special(tea.KeyDown))
+	}
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("New name"))
+	tm.Type("site")
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("permission"))
+
+	tm.Send(special(tea.KeyEsc))
+	tm.Send(special(tea.KeyEsc))
+	var list []byte
+	waitFor(t, tm, &seen, func(b []byte) bool {
+		if bytes.Contains(b, []byte("Add project")) {
+			list = append([]byte(nil), b...)
+			return true
+		}
+		return false
+	})
+	if !bytes.Contains(list, []byte("blog")) {
+		t.Errorf("list does not show blog after the failed save")
+	}
+	if bytes.Contains(list, []byte("site")) {
+		t.Errorf("list shows site after the failed save")
+	}
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
 func TestRenameShowsNewName(t *testing.T) {
 	dir := t.TempDir()
 	createSQLite(t, dir, "app.db")

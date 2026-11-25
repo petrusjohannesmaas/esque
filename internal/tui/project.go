@@ -120,11 +120,8 @@ func (s *projectView) updateRename(key tea.KeyMsg) (screen, tea.Cmd) {
 		return s, nil
 	case "enter":
 		name := strings.TrimSpace(s.input.Value())
-		if err := s.m.cfg.Rename(s.m.cfg.Projects[s.index].Name, name); err != nil {
-			s.status = err.Error()
-			return s, nil
-		}
-		if err := config.Save(s.m.cfgPath, s.m.cfg); err != nil {
+		old := s.m.cfg.Projects[s.index].Name
+		if err := s.m.change(func(cfg *config.Config) error { return cfg.Rename(old, name) }); err != nil {
 			s.status = err.Error()
 			return s, nil
 		}
@@ -139,12 +136,7 @@ func (s *projectView) updateRemove(key tea.KeyMsg) (screen, tea.Cmd) {
 	switch key.String() {
 	case "y":
 		name := s.m.cfg.Projects[s.index].Name
-		if err := s.m.cfg.Remove(name); err != nil {
-			s.status = err.Error()
-			s.mode = projectActions
-			return s, nil
-		}
-		if err := config.Save(s.m.cfgPath, s.m.cfg); err != nil {
+		if err := s.m.change(func(cfg *config.Config) error { return cfg.Remove(name) }); err != nil {
 			s.status = err.Error()
 			s.mode = projectActions
 			return s, nil

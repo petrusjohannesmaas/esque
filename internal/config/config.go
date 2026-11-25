@@ -36,6 +36,19 @@ type Config struct {
 	Projects []Project `json:"projects"`
 }
 
+// Clone returns a copy that shares no memory with the original.
+func (c *Config) Clone() *Config {
+	next := &Config{Projects: make([]Project, len(c.Projects))}
+	copy(next.Projects, c.Projects)
+	for i := range next.Projects {
+		if setup := next.Projects[i].S3; setup != nil {
+			dup := *setup
+			next.Projects[i].S3 = &dup
+		}
+	}
+	return next
+}
+
 // Load reads the config file. A missing file is an empty config.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)

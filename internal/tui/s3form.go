@@ -97,11 +97,8 @@ func (s *s3Form) submit() (screen, tea.Cmd) {
 		AccessKeyID: strings.TrimSpace(s.inputs[s3AccessKey].Value()),
 		SecretKey:   s.inputs[s3SecretKey].Value(),
 	}
-	if err := s.m.cfg.SetS3(s.m.cfg.Projects[s.index].Name, setup); err != nil {
-		s.status = err.Error()
-		return s, nil
-	}
-	if err := config.Save(s.m.cfgPath, s.m.cfg); err != nil {
+	name := s.m.cfg.Projects[s.index].Name
+	if err := s.m.change(func(cfg *config.Config) error { return cfg.SetS3(name, setup) }); err != nil {
 		s.status = err.Error()
 		return s, nil
 	}
