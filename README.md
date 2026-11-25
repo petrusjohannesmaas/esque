@@ -40,7 +40,7 @@ A project backs up one database file. To change the passphrase or the database f
 
 ## Set up S3
 
-Open the project and choose S3 setup. Fill in the endpoint, region, bucket, an optional prefix, the access key ID and the secret key. Any S3-compatible service works, and an endpoint without a scheme uses https.
+Open the project and choose S3 setup. Fill in the endpoint, region, bucket, an optional prefix, the access key ID and the secret key. Any S3-compatible service should work, and an endpoint without a scheme uses https. Backup, list and restore have been tested with [Garage](https://garagehq.deuxfleurs.fr/) v2.6.0, whose default region is `garage`.
 
 The secret key is hidden while you type and after you save. Leave the field empty when you edit the setup to keep the current key.
 
