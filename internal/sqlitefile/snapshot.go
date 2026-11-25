@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"modernc.org/sqlite"
@@ -15,10 +16,17 @@ type backuper interface {
 	NewBackup(dst string) (*sqlite.Backup, error)
 }
 
+// readOnlyURI builds a read-only SQLite URI, escaping characters such as
+// #, ? and % in the path.
+func readOnlyURI(path string) string {
+	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}
+	return u.String()
+}
+
 // Snapshot copies the database at src to dst, including data still in the
 // -wal file, without writing to src.
 func Snapshot(src, dst string) error {
-	db, err := sql.Open("sqlite", "file:"+src+"?mode=ro")
+	db, err := sql.Open("sqlite", readOnlyURI(src))
 	if err != nil {
 		return err
 	}
@@ -50,7 +58,7 @@ func Snapshot(src, dst string) error {
 
 // Check runs SQLite's integrity check on the database at path.
 func Check(path string) error {
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	db, err := sql.Open("sqlite", readOnlyURI(path))
 	if err != nil {
 		return err
 	}

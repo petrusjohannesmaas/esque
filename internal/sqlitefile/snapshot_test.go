@@ -112,3 +112,47 @@ func TestCheckDetectsCorruption(t *testing.T) {
 		t.Error("Check on a corrupt database returned nil")
 	}
 }
+
+func TestSnapshotPathWithSpecialCharacters(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "a#b%41c")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(dir, "live.sqlite")
+	db, err := sql.Open("sqlite", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE sample (id INTEGER PRIMARY KEY, note TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := db.Exec("INSERT INTO sample (note) VALUES (?)", "row"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dst := filepath.Join(dir, "snapshot.sqlite")
+	if err := sqlitefile.Snapshot(src, dst); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if err := sqlitefile.Check(dst); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	copied, err := sql.Open("sqlite", dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer copied.Close()
+	var rows int
+	if err := copied.QueryRow("SELECT count(*) FROM sample").Scan(&rows); err != nil {
+		t.Fatalf("query snapshot: %v", err)
+	}
+	if rows != 3 {
+		t.Errorf("snapshot has %d rows, want 3", rows)
+	}
+}
