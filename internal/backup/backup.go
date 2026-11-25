@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -29,13 +28,10 @@ var (
 	ErrFileExists      = errors.New("file already exists")
 )
 
-// namePattern is what a backup name may contain.
-var namePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-
 // ValidName returns ErrBadName when name has a character a backup name may not
 // use.
 func ValidName(name string) error {
-	if name == "" || !namePattern.MatchString(name) {
+	if !config.ValidName(name) {
 		return fmt.Errorf("%q: %w", name, ErrBadName)
 	}
 	return nil

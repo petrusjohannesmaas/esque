@@ -147,9 +147,11 @@ func (c *Config) Remove(name string) error {
 	return fmt.Errorf("project %q not found", name)
 }
 
-func validateName(name string) error {
+// ValidName reports whether name is a legal project or backup name: not empty
+// and made only of letters, digits, -, _ and .
+func ValidName(name string) bool {
 	if name == "" {
-		return errors.New("project name is empty")
+		return false
 	}
 	for _, r := range name {
 		switch {
@@ -158,8 +160,18 @@ func validateName(name string) error {
 			r >= '0' && r <= '9',
 			r == '-', r == '_', r == '.':
 		default:
-			return fmt.Errorf("project name %q may use only letters, digits, -, _ and .", name)
+			return false
 		}
+	}
+	return true
+}
+
+func validateName(name string) error {
+	if name == "" {
+		return errors.New("project name is empty")
+	}
+	if !ValidName(name) {
+		return fmt.Errorf("project name %q may use only letters, digits, -, _ and .", name)
 	}
 	return nil
 }

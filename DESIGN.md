@@ -6,7 +6,7 @@ Esque is one Go binary with a Bubble Tea terminal interface. It backs up the SQL
 
 All packages live under `internal/`, and `main.go` at the root wires them together.
 
-- `config` loads and saves the project list. A project has a name, a directory, one database file name in that directory, a passphrase and an optional S3 setup. Names are unique and use letters, digits, `-`, `_` and `.`.
+- `config` loads and saves the project list. A project has a name, a directory, one database file name in that directory, a passphrase and an optional S3 setup. Names are unique.
 - `sqlitefile` finds SQLite files in a directory by their 16-byte file header, takes a snapshot of a live database with SQLite's online backup call (`modernc.org/sqlite`, `NewBackup` through `sql.Conn.Raw`), and runs `PRAGMA integrity_check` on a file.
 - `crypt` encrypts and decrypts in the `openssl enc -aes-256-cbc -salt -pbkdf2 -iter 100000` format: the `Salted__` header, an 8-byte salt, PBKDF2-HMAC-SHA256 with 100000 iterations for the key and IV, and PKCS#7 padding.
 - `remote` is the S3 port. `remote.Store` has Put, Exists, List and Get, with keys relative to the project's prefix. The production adapter uses `minio-go`. It turns S3 errors into `remote.ErrAccessDenied`, `remote.ErrUnreachable` and `remote.ErrNotFound`. `remote/remotetest` holds the in-memory adapter and the contract suite that both adapters run.
@@ -28,7 +28,7 @@ An endpoint without a scheme means https.
 ## Rules
 
 - Esque never opens the live database for writing. Snapshots read it through the backup call, and restores write a new file only.
-- A backup name uses letters, digits, `-`, `_` and `.`. The default is `<project>-YYYY-MM-DD_HH-MM-SS` in local time. Esque refuses a name that already exists under the prefix.
+- A project name and a backup name use only letters, digits, `-`, `_` and `.`, and are not empty. The default is `<project>-YYYY-MM-DD_HH-MM-SS` in local time. Esque refuses a name that already exists under the prefix.
 - A restore refuses to overwrite an existing file in the target folder.
 - Only `.sqlite.enc` objects directly under the prefix count as backups.
 - The `tui` screens change the config only through `Model.change`, which saves a copy and keeps it only when the save succeeds, so memory never gets ahead of the file. (25 November 2026, #1)

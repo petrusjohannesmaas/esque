@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/petrusjohannesmaas/esque/internal/config"
@@ -94,6 +95,28 @@ func TestAddRefusesUsedName(t *testing.T) {
 	err := cfg.Add(dup)
 	if !errors.Is(err, config.ErrNameTaken) {
 		t.Fatalf("Add duplicate: got %v, want config.ErrNameTaken", err)
+	}
+	if len(cfg.Projects) != 1 {
+		t.Errorf("config has %d projects, want 1", len(cfg.Projects))
+	}
+}
+
+func TestAddRefusesBadName(t *testing.T) {
+	cfg := &config.Config{}
+	for _, name := range []string{"my blog", "blog/1"} {
+		p := config.Project{Name: name, Dir: "/srv/blog", DB: "blog.sqlite", Passphrase: "s3cret"}
+		err := cfg.Add(p)
+		if err == nil || !strings.Contains(err.Error(), "project name") {
+			t.Errorf("Add %q: got %v, want an error naming the project name", name, err)
+		}
+	}
+	if len(cfg.Projects) != 0 {
+		t.Fatalf("config has %d projects after bad names, want 0", len(cfg.Projects))
+	}
+
+	ok := config.Project{Name: "blog-1.v2_x", Dir: "/srv/blog", DB: "blog.sqlite", Passphrase: "s3cret"}
+	if err := cfg.Add(ok); err != nil {
+		t.Fatalf("Add blog-1.v2_x: %v", err)
 	}
 	if len(cfg.Projects) != 1 {
 		t.Errorf("config has %d projects, want 1", len(cfg.Projects))
