@@ -21,6 +21,7 @@ import (
 
 	"github.com/petrusjohannesmaas/esque/internal/backup"
 	"github.com/petrusjohannesmaas/esque/internal/config"
+	"github.com/petrusjohannesmaas/esque/internal/crypt"
 	"github.com/petrusjohannesmaas/esque/internal/remote"
 	"github.com/petrusjohannesmaas/esque/internal/remote/remotetest"
 	"github.com/petrusjohannesmaas/esque/internal/tui"
@@ -871,6 +872,80 @@ func TestListShowsUnreachableS3(t *testing.T) {
 	tm.Send(special(tea.KeyDown))
 	tm.Send(special(tea.KeyEnter))
 	waitFor(t, tm, &seen, contains("Cannot reach S3 at https://s3.example.com"))
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
+func TestRestoreShowsBadBackup(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	store := remotetest.NewMemory("blog")
+	var enc bytes.Buffer
+	if err := crypt.Encrypt(&enc, strings.NewReader("not a database"), "another passphrase"); err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	if err := store.Put(context.Background(), "wrong.sqlite.enc", &enc, int64(enc.Len())); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	now := time.Date(2026, 11, 25, 14, 30, 0, 0, time.Local)
+	tm := backupApp(t, dir, store, now)
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("> blog"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+	tm.Send(special(tea.KeyDown))
+	tm.Send(special(tea.KeyDown))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("wrong"))
+	tm.Send(special(tea.KeyEnter))
+	folder := filepath.Join(dir, "restored")
+	waitFor(t, tm, &seen, contains(folder))
+	tm.Send(special(tea.KeyEnter))
+	message := "This backup cannot be restored with the project's passphrase, or it is damaged"
+	var frame []byte
+	waitFor(t, tm, &seen, func(b []byte) bool {
+		if bytes.Contains(b, []byte(message)) {
+			frame = append([]byte(nil), b...)
+			return true
+		}
+		return false
+	})
+	if bytes.Contains(frame, []byte("wrong.sqlite.enc: "+message)) {
+		t.Errorf("message has the object name in front of it: %q", frame)
+	}
+	entries, err := os.ReadDir(folder)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("restored folder holds %d files, want none", len(entries))
+	}
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
+
+func TestListShowsRefusedKey(t *testing.T) {
+	dir := t.TempDir()
+	createSQLite(t, dir, "app.db")
+	store := remotetest.NewMemory("blog")
+	store.FailList = remote.ErrAccessDenied
+	now := time.Date(2026, 11, 25, 14, 30, 0, 0, time.Local)
+	tm := backupApp(t, dir, store, now)
+	var seen bytes.Buffer
+
+	waitFor(t, tm, &seen, contains("> blog"))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Reveal passphrase"))
+	tm.Send(special(tea.KeyDown))
+	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("S3 refused the access key"))
 
 	if err := tm.Quit(); err != nil {
 		t.Fatalf("Quit: %v", err)
