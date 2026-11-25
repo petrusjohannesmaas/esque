@@ -10,3 +10,5 @@ OUT OF SCOPE
 - 25 November 2026 | #1 | Replacing the live database when restoring. | Restores write a new file only.
 DECISIONS
 NOTES
+- 25 November 2026 | #15 | The Secret key field on a new project's S3 setup says "leave empty to keep the current key" when no key is saved. | Small UI fix, needs its own issue.
+- 25 November 2026 | #15 | Quitting during a restore leaves an empty esque-restore-*.sqlite temp file in the target folder. | Needs its own issue.
