@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -49,8 +49,24 @@ func waitFor(t *testing.T, tm *teatest.TestModel, seen *bytes.Buffer, cond func(
 	teatest.WaitFor(t, io.TeeReader(tm.Output(), seen), cond, teatest.WithDuration(2*time.Second))
 }
 
+// escapes matches the terminal control sequences in program output.
+var escapes = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-Za-z]`)
+
+// flat strips control sequences, the frame's side borders and all white space
+// from b, so text the frame wraps over several lines still matches.
+func flat(b []byte) []byte {
+	b = escapes.ReplaceAll(b, nil)
+	b = bytes.ReplaceAll(b, []byte("│"), nil)
+	return bytes.Join(bytes.Fields(b), nil)
+}
+
+// has reports whether text appears in b, ignoring layout.
+func has(b []byte, text string) bool {
+	return bytes.Contains(flat(b), flat([]byte(text)))
+}
+
 func contains(text string) func([]byte) bool {
-	return func(b []byte) bool { return bytes.Contains(b, []byte(text)) }
+	return func(b []byte) bool { return has(b, text) }
 }
 
 func key(r rune) tea.KeyMsg {
@@ -136,7 +152,7 @@ func TestBackUpWithDefaultName(t *testing.T) {
 	tm := backupApp(t, dir, store, now)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	tm.Send(special(tea.KeyEnter))
 	waitFor(t, tm, &seen, contains("Reveal passphrase"))
 	tm.Send(special(tea.KeyEnter))
@@ -154,8 +170,8 @@ func TestBackUpWithDefaultName(t *testing.T) {
 	if list[0].Name != "blog-2026-11-25_14-30-00.sqlite.enc" {
 		t.Errorf("stored name = %q, want blog-2026-11-25_14-30-00.sqlite.enc", list[0].Name)
 	}
-	size := fmt.Sprintf("%d bytes", list[0].Size)
-	if !bytes.Contains(seen.Bytes(), []byte(size)) {
+	size := humanize.Bytes(uint64(list[0].Size))
+	if !has(seen.Bytes(), size) {
 		t.Errorf("screen does not show the backup size %q", size)
 	}
 
@@ -189,7 +205,7 @@ func TestBackUpAsksForAnotherName(t *testing.T) {
 	tm := backupApp(t, dir, store, now)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	tm.Send(special(tea.KeyEnter))
 	waitFor(t, tm, &seen, contains("Reveal passphrase"))
 	tm.Send(special(tea.KeyEnter))
@@ -198,7 +214,7 @@ func TestBackUpAsksForAnotherName(t *testing.T) {
 
 	var frame []byte
 	waitFor(t, tm, &seen, func(b []byte) bool {
-		if bytes.Contains(b, []byte("already exists")) {
+		if has(b, "already exists") {
 			frame = append([]byte(nil), b...)
 			return true
 		}
@@ -207,10 +223,10 @@ func TestBackUpAsksForAnotherName(t *testing.T) {
 	if store.puts != 0 {
 		t.Errorf("backup uploaded %d times with a taken name, want 0", store.puts)
 	}
-	if !bytes.Contains(frame, []byte("already exists")) {
+	if !has(frame, "already exists") {
 		t.Errorf("screen does not name the existing backup in %q", frame)
 	}
-	if !bytes.Contains(frame, []byte("blog-2026-11-25_14-30-00")) {
+	if !has(frame, "blog-2026-11-25_14-30-00") {
 		t.Errorf("name field not shown again in %q", frame)
 	}
 
@@ -245,7 +261,7 @@ func TestBackUpShowsMissingDatabase(t *testing.T) {
 	tm := backupApp(t, dir, store, now)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	tm.Send(special(tea.KeyEnter))
 	waitFor(t, tm, &seen, contains("Reveal passphrase"))
 	tm.Send(special(tea.KeyEnter))
@@ -273,14 +289,14 @@ func TestProjectViewListsActions(t *testing.T) {
 	tm, _ := newApp(t)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("Add project"))
+	waitFor(t, tm, &seen, contains("[a] add project"))
 	addProject(t, tm, &seen, dir, "s3cret")
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	tm.Send(special(tea.KeyEnter))
 	waitFor(t, tm, &seen, contains("Reveal passphrase"))
 
 	for _, action := range []string{"Back up", "List backups", "Restore", "S3 setup", "Reveal passphrase", "Rename", "Remove"} {
-		if !bytes.Contains(seen.Bytes(), []byte(action)) {
+		if !has(seen.Bytes(), action) {
 			t.Errorf("output does not show %q", action)
 		}
 	}
@@ -297,9 +313,9 @@ func TestRevealPassphraseUntilKey(t *testing.T) {
 	tm, _ := newApp(t)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("Add project"))
+	waitFor(t, tm, &seen, contains("[a] add project"))
 	addProject(t, tm, &seen, dir, "s3cret")
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	tm.Send(special(tea.KeyEnter))
 	waitFor(t, tm, &seen, contains("Reveal passphrase"))
 	for i := 0; i < 4; i++ {
@@ -311,13 +327,13 @@ func TestRevealPassphraseUntilKey(t *testing.T) {
 	tm.Send(key('x'))
 	var final []byte
 	waitFor(t, tm, &seen, func(b []byte) bool {
-		if bytes.Contains(b, []byte("Back up")) {
+		if has(b, "Back up") {
 			final = append([]byte(nil), b...)
 			return true
 		}
 		return false
 	})
-	if bytes.Contains(final, []byte("s3cret")) {
+	if has(final, "s3cret") {
 		t.Errorf("passphrase remains visible after a key press")
 	}
 
@@ -333,9 +349,9 @@ func TestRenameKeepsOldNameWhenSaveFails(t *testing.T) {
 	tm, cfgPath := newApp(t)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("Add project"))
+	waitFor(t, tm, &seen, contains("[a] add project"))
 	addProject(t, tm, &seen, dir, "s3cret")
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	cfgDir := filepath.Dir(cfgPath)
 	if err := os.Chmod(cfgDir, 0o500); err != nil {
 		t.Fatalf("Chmod: %v", err)
@@ -357,16 +373,16 @@ func TestRenameKeepsOldNameWhenSaveFails(t *testing.T) {
 	tm.Send(special(tea.KeyEsc))
 	var list []byte
 	waitFor(t, tm, &seen, func(b []byte) bool {
-		if bytes.Contains(b, []byte("Add project")) {
+		if has(b, "[a] add project") {
 			list = append([]byte(nil), b...)
 			return true
 		}
 		return false
 	})
-	if !bytes.Contains(list, []byte("blog")) {
+	if !has(list, "blog") {
 		t.Errorf("list does not show blog after the failed save")
 	}
-	if bytes.Contains(list, []byte("site")) {
+	if has(list, "site") {
 		t.Errorf("list shows site after the failed save")
 	}
 	if err := tm.Quit(); err != nil {
@@ -381,9 +397,9 @@ func TestRenameShowsNewName(t *testing.T) {
 	tm, cfgPath := newApp(t)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("Add project"))
+	waitFor(t, tm, &seen, contains("[a] add project"))
 	addProject(t, tm, &seen, dir, "s3cret")
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	tm.Send(special(tea.KeyEnter))
 	waitFor(t, tm, &seen, contains("Reveal passphrase"))
 	for i := 0; i < 5; i++ {
@@ -396,13 +412,13 @@ func TestRenameShowsNewName(t *testing.T) {
 
 	var list []byte
 	waitFor(t, tm, &seen, func(b []byte) bool {
-		if bytes.Contains(b, []byte("> journal")) {
+		if has(b, "▸ journal") {
 			list = append([]byte(nil), b...)
 			return true
 		}
 		return false
 	})
-	if bytes.Contains(list, []byte("blog")) {
+	if has(list, "blog") {
 		t.Errorf("list still shows blog after the rename")
 	}
 
@@ -452,7 +468,7 @@ func TestRemoveProjectAfterConfirm(t *testing.T) {
 	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(100, 40))
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	tm.Send(special(tea.KeyEnter))
 	waitFor(t, tm, &seen, contains("Reveal passphrase"))
 	for i := 0; i < 6; i++ {
@@ -462,26 +478,26 @@ func TestRemoveProjectAfterConfirm(t *testing.T) {
 
 	var confirm []byte
 	waitFor(t, tm, &seen, func(b []byte) bool {
-		if bytes.Contains(b, []byte("Remove blog?")) {
+		if has(b, "Remove blog?") {
 			confirm = append([]byte(nil), b...)
 			return true
 		}
 		return false
 	})
-	if !bytes.Contains(confirm, []byte("passphrase and S3 setup are deleted too")) {
+	if !has(confirm, "Forgets its passphrase and S3 setup") {
 		t.Errorf("confirmation does not say the passphrase is deleted too: %q", confirm)
 	}
 
 	tm.Send(key('y'))
 	var list []byte
 	waitFor(t, tm, &seen, func(b []byte) bool {
-		if bytes.Contains(b, []byte("Add project")) {
+		if has(b, "[a] add project") {
 			list = append([]byte(nil), b...)
 			return true
 		}
 		return false
 	})
-	if bytes.Contains(list, []byte("blog")) {
+	if has(list, "blog") {
 		t.Errorf("list still shows blog after the removal")
 	}
 
@@ -506,8 +522,10 @@ func TestRemoveProjectAfterConfirm(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "app.db")); err != nil {
 		t.Errorf("database file is gone after the removal: %v", err)
 	}
-	if opens != 0 {
-		t.Errorf("removing a project opened a store %d times, want 0", opens)
+	// The projects screen reads blog's backup list once when it opens.
+	// Removing the project opens no further store.
+	if opens != 1 {
+		t.Errorf("OpenStore called %d times, want 1 for the projects screen and none for the removal", opens)
 	}
 }
 
@@ -535,12 +553,12 @@ func TestActionsNeedS3Setup(t *testing.T) {
 	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(100, 40))
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 
 	for i := range 3 {
 		if i > 0 {
 			tm.Send(special(tea.KeyEscape))
-			waitFor(t, tm, &seen, contains("Add project"))
+			waitFor(t, tm, &seen, contains("[a] add project"))
 		}
 		tm.Send(special(tea.KeyEnter))
 		waitFor(t, tm, &seen, contains("Reveal passphrase"))
@@ -581,7 +599,7 @@ func TestS3SetupSavedWithHiddenSecret(t *testing.T) {
 	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(100, 40))
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	tm.Send(special(tea.KeyEnter))
 	waitFor(t, tm, &seen, contains("Reveal passphrase"))
 	for range 3 {
@@ -623,7 +641,7 @@ func TestS3SetupSavedWithHiddenSecret(t *testing.T) {
 	if *s3 != want {
 		t.Errorf("saved S3 setup = %+v, want %+v", *s3, want)
 	}
-	if bytes.Contains(seen.Bytes(), []byte("topsecret")) {
+	if has(seen.Bytes(), "topsecret") {
 		t.Error("program output contains the secret key")
 	}
 }
@@ -667,7 +685,7 @@ func TestS3EditKeepsSecretUnlessRetyped(t *testing.T) {
 		waitFor(t, tm, &seen, contains("Endpoint"))
 	}
 
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	enterProject()
 
 	tm.Send(special(tea.KeyTab))
@@ -692,7 +710,7 @@ func TestS3EditKeepsSecretUnlessRetyped(t *testing.T) {
 	}
 
 	tm.Send(special(tea.KeyEscape))
-	waitFor(t, tm, &seen, contains("Add project"))
+	waitFor(t, tm, &seen, contains("[a] add project"))
 	enterProject()
 	for range 5 {
 		tm.Send(special(tea.KeyTab))
@@ -717,7 +735,7 @@ func TestS3EditKeepsSecretUnlessRetyped(t *testing.T) {
 		t.Errorf("saved secret = %q, want newsecret", second.SecretKey)
 	}
 	for _, secret := range []string{"topsecret", "newsecret"} {
-		if bytes.Contains(seen.Bytes(), []byte(secret)) {
+		if has(seen.Bytes(), secret) {
 			t.Errorf("program output contains %q", secret)
 		}
 	}
@@ -729,9 +747,9 @@ func TestAddProjectAppearsInList(t *testing.T) {
 	tm, cfgPath := newApp(t)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("Add project"))
+	waitFor(t, tm, &seen, contains("[a] add project"))
 	addProject(t, tm, &seen, dir, "s3cret")
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 
 	if err := tm.Quit(); err != nil {
 		t.Fatalf("Quit: %v", err)
@@ -746,7 +764,7 @@ func TestAddProjectAppearsInList(t *testing.T) {
 	if got.Name != "blog" || got.DB != "app.db" {
 		t.Errorf("saved project = %+v, want name blog and db app.db", got)
 	}
-	if bytes.Contains(seen.Bytes(), []byte("s3cret")) {
+	if has(seen.Bytes(), "s3cret") {
 		t.Errorf("program output contains the passphrase")
 	}
 }
@@ -758,12 +776,12 @@ func TestAddProjectPicksAmongSeveralFiles(t *testing.T) {
 	tm, cfgPath := newApp(t)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("Add project"))
+	waitFor(t, tm, &seen, contains("[a] add project"))
 	addProject(t, tm, &seen, dir, "s3cret")
-	waitFor(t, tm, &seen, contains("Choose the SQLite database file"))
+	waitFor(t, tm, &seen, contains("Choose a database"))
 	tm.Send(special(tea.KeyDown))
 	tm.Send(special(tea.KeyEnter))
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 
 	if err := tm.Quit(); err != nil {
 		t.Fatalf("Quit: %v", err)
@@ -787,11 +805,11 @@ func TestAddProjectWithNoSQLiteFile(t *testing.T) {
 	tm, cfgPath := newApp(t)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("Add project"))
+	waitFor(t, tm, &seen, contains("[a] add project"))
 	addProject(t, tm, &seen, dir, "s3cret")
 	waitFor(t, tm, &seen, func(b []byte) bool {
-		return bytes.Contains(b, []byte("No SQLite database found in "+dir)) ||
-			bytes.Contains(b, []byte("> blog"))
+		return has(b, "No SQLite database found in "+dir) ||
+			has(b, "▸ blog")
 	})
 
 	if err := tm.Quit(); err != nil {
@@ -803,7 +821,7 @@ func TestAddProjectWithNoSQLiteFile(t *testing.T) {
 	if len(cfg.Projects) != 0 {
 		t.Errorf("config has %d projects, want none", len(cfg.Projects))
 	}
-	if !bytes.Contains(seen.Bytes(), []byte("No SQLite database found in "+dir)) {
+	if !has(seen.Bytes(), "No SQLite database found in "+dir) {
 		t.Errorf("output does not show the missing database message")
 	}
 }
@@ -846,7 +864,7 @@ func TestListAndRestore(t *testing.T) {
 	tm := backupApp(t, dir, memory, now)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	tm.Send(special(tea.KeyEnter))
 	waitFor(t, tm, &seen, contains("Reveal passphrase"))
 	tm.Send(special(tea.KeyDown))
@@ -854,7 +872,7 @@ func TestListAndRestore(t *testing.T) {
 
 	var frame []byte
 	waitFor(t, tm, &seen, func(b []byte) bool {
-		if bytes.Contains(b, []byte("2 November 2026 09:15")) {
+		if has(b, "2 Nov 2026 09:15") {
 			frame = append([]byte(nil), b...)
 			return true
 		}
@@ -878,7 +896,7 @@ func TestListAndRestore(t *testing.T) {
 			size = obj.Size
 		}
 	}
-	if sizeStr := humanize.Bytes(uint64(size)); !bytes.Contains(frame, []byte(sizeStr)) {
+	if sizeStr := humanize.Bytes(uint64(size)); !has(frame, sizeStr) {
 		t.Errorf("list does not show blog-2's size %q in %q", sizeStr, frame)
 	}
 
@@ -887,12 +905,14 @@ func TestListAndRestore(t *testing.T) {
 	tm.Send(special(tea.KeyDown))
 	tm.Send(special(tea.KeyDown))
 	tm.Send(special(tea.KeyEnter))
-	waitFor(t, tm, &seen, contains("2 November 2026 09:15"))
+	waitFor(t, tm, &seen, contains("2 Nov 2026 09:15"))
 	tm.Send(special(tea.KeyEnter))
 
 	folder := filepath.Join(dir, "restored")
 	waitFor(t, tm, &seen, contains(folder))
 	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Restore blog-2?"))
+	tm.Send(key('y'))
 	restored := filepath.Join(folder, "blog-2.sqlite")
 	waitFor(t, tm, &seen, contains(restored))
 	if _, err := os.Stat(restored); err != nil {
@@ -914,7 +934,7 @@ func TestListShowsUnreachableS3(t *testing.T) {
 	tm := backupApp(t, dir, store, now)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	tm.Send(special(tea.KeyEnter))
 	waitFor(t, tm, &seen, contains("Reveal passphrase"))
 	tm.Send(special(tea.KeyDown))
@@ -942,7 +962,7 @@ func TestRestoreShowsBadBackup(t *testing.T) {
 	tm := backupApp(t, dir, store, now)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	tm.Send(special(tea.KeyEnter))
 	waitFor(t, tm, &seen, contains("Reveal passphrase"))
 	tm.Send(special(tea.KeyDown))
@@ -953,16 +973,18 @@ func TestRestoreShowsBadBackup(t *testing.T) {
 	folder := filepath.Join(dir, "restored")
 	waitFor(t, tm, &seen, contains(folder))
 	tm.Send(special(tea.KeyEnter))
+	waitFor(t, tm, &seen, contains("Restore wrong?"))
+	tm.Send(key('y'))
 	message := "This backup cannot be restored with the project's passphrase, or it is damaged"
 	var frame []byte
 	waitFor(t, tm, &seen, func(b []byte) bool {
-		if bytes.Contains(b, []byte(message)) {
+		if has(b, message) {
 			frame = append([]byte(nil), b...)
 			return true
 		}
 		return false
 	})
-	if bytes.Contains(frame, []byte("wrong.sqlite.enc: "+message)) {
+	if has(frame, "wrong.sqlite.enc: "+message) {
 		t.Errorf("message has the object name in front of it: %q", frame)
 	}
 	entries, err := os.ReadDir(folder)
@@ -988,7 +1010,7 @@ func TestListShowsRefusedKey(t *testing.T) {
 	tm := backupApp(t, dir, store, now)
 	var seen bytes.Buffer
 
-	waitFor(t, tm, &seen, contains("> blog"))
+	waitFor(t, tm, &seen, contains("▸ blog"))
 	tm.Send(special(tea.KeyEnter))
 	waitFor(t, tm, &seen, contains("Reveal passphrase"))
 	tm.Send(special(tea.KeyDown))

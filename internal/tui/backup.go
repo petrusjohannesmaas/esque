@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/dustin/go-humanize"
 
 	"github.com/petrusjohannesmaas/esque/internal/backup"
+	"github.com/petrusjohannesmaas/esque/internal/config"
 	"github.com/petrusjohannesmaas/esque/internal/remote"
 )
 
@@ -30,68 +32,104 @@ type backupDoneMsg struct {
 type backupScreen struct {
 	m      *Model
 	index  int
-	input  textinput.Model
+	form   fieldSet
 	spin   spinner.Model
 	phase  int
-	status string
 	object remote.Object
+	height int
 }
 
 func newBackupScreen(m *Model, index int) *backupScreen {
-	s := &backupScreen{m: m, index: index}
-	s.input = textinput.New()
-	s.input.Width = 60
-	s.input.Placeholder = "backup name"
-	s.input.SetValue(backup.DefaultName(m.cfg.Projects[index].Name, m.now()))
-	s.input.Focus()
-	s.spin = spinner.New()
+	p := m.cfg.Projects[index]
+	f := newField("Backup name", "backup name", "")
+	f.input.SetValue(backup.DefaultName(p.Name, m.now()))
+	s := &backupScreen{m: m, index: index, form: fieldSet{fields: []field{f}}}
+	s.spin = spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(accentStyle))
 	return s
 }
 
-func (s *backupScreen) update(msg tea.Msg) (screen, tea.Cmd) {
-	if done, ok := msg.(backupDoneMsg); ok {
-		if done.err != nil {
-			s.status = describe(done.err, s.m.endpoint(s.index))
-			s.phase = backupNaming
-			s.input.Focus()
-			return s, textinput.Blink
-		}
-		s.object = done.object
-		s.phase = backupDone
-		return s, nil
+// location names the bucket and prefix of a setup, such as
+// backups/blog/.
+func location(setup config.S3Setup) string {
+	prefix := strings.Trim(setup.Prefix, "/")
+	if prefix == "" {
+		return setup.Bucket
 	}
-	key, ok := msg.(tea.KeyMsg)
-	if !ok {
+	return setup.Bucket + "/" + prefix + "/"
+}
+
+func (s *backupScreen) init() tea.Cmd { return s.form.focusOn(0) }
+
+func (s *backupScreen) setSize(width, height int) {
+	s.form.setWidth(width)
+	s.height = height
+}
+
+func (s *backupScreen) crumbs() []string {
+	return []string{"Projects", s.m.cfg.Projects[s.index].Name, "Back up"}
+}
+
+func (s *backupScreen) typing() bool { return s.phase == backupNaming }
+
+func (s *backupScreen) keys() keyMap {
+	switch s.phase {
+	case backupWorking:
+		return keyMap{short: []key.Binding{keyForceQuit}}
+	case backupDone:
+		return keyMap{short: []key.Binding{keyBack}}
+	}
+	return keyMap{short: []key.Binding{backupKeys.Start, keyBack}}
+}
+
+func (s *backupScreen) update(msg tea.Msg) (screen, tea.Cmd) {
+	switch msg := msg.(type) {
+	case backupDoneMsg:
+		if msg.err != nil {
+			s.form.fields[0].err = describe(msg.err, s.m.endpoint(s.index))
+			s.phase = backupNaming
+			return s, s.form.focusOn(0)
+		}
+		s.object = msg.object
+		s.phase = backupDone
+		s.m.forget(s.m.cfg.Projects[s.index].Name)
+		return s, nil
+	case spinner.TickMsg:
+		if s.phase != backupWorking {
+			return s, nil
+		}
 		var cmd tea.Cmd
 		s.spin, cmd = s.spin.Update(msg)
 		return s, cmd
-	}
-	if s.phase == backupWorking {
-		return s, nil
-	}
-	switch key.String() {
-	case "esc":
-		return newProjectView(s.m, s.index), nil
-	case "enter":
-		if s.phase != backupNaming {
+	case tea.KeyMsg:
+		switch s.phase {
+		case backupWorking:
+			return s, nil
+		case backupDone:
+			if key.Matches(msg, keyBack) {
+				return newProjectView(s.m, s.index), nil
+			}
 			return s, nil
 		}
-		return s, s.start(strings.TrimSpace(s.input.Value()))
+		switch {
+		case key.Matches(msg, keyBack):
+			return newProjectView(s.m, s.index), nil
+		case key.Matches(msg, backupKeys.Start):
+			return s, s.start(s.form.fields[0].value())
+		}
 	}
-	var cmd tea.Cmd
-	s.input, cmd = s.input.Update(key)
-	return s, cmd
+	return s, s.form.updateFocused(msg)
 }
 
 func (s *backupScreen) start(name string) tea.Cmd {
 	project := s.m.cfg.Projects[s.index]
+	s.form.clearErrors()
 	store, err := s.m.deps.OpenStore(*project.S3)
 	if err != nil {
-		s.status = describe(err, s.m.endpoint(s.index))
+		s.form.fields[0].err = describe(err, s.m.endpoint(s.index))
 		return nil
 	}
 	s.phase = backupWorking
-	s.status = ""
+	s.form.fields[0].blur()
 	ctx := context.Background()
 	return tea.Batch(s.spin.Tick, func() tea.Msg {
 		object, err := backup.Backup(ctx, project, name, store)
@@ -117,20 +155,24 @@ func describe(err error, endpoint string) string {
 
 func (s *backupScreen) view() string {
 	project := s.m.cfg.Projects[s.index]
-	var b strings.Builder
-	fmt.Fprintf(&b, "Back up %s\n\n", project.Name)
+	width := s.form.width
 	switch s.phase {
 	case backupWorking:
-		fmt.Fprintf(&b, "%s Uploading %s\n", s.spin.View(), s.input.Value())
+		return s.spin.View() + " " + wrap("Uploading…", width-2) + "\n\n" +
+			mutedStyle.Render(truncate(s.form.fields[0].value(), width))
 	case backupDone:
-		fmt.Fprintf(&b, "Backup uploaded\n\n%s\n%d bytes\n", s.object.Name, s.object.Size)
-		b.WriteString("\nesc back\n")
-	default:
-		fmt.Fprintf(&b, "Name\n%s\n", s.input.View())
-		if s.status != "" {
-			fmt.Fprintf(&b, "\n%s\n", s.status)
+		rows := [][2]string{
+			{"Name", s.object.Name},
+			{"Size", humanize.Bytes(uint64(s.object.Size))},
+			{"Where", location(*project.S3)},
 		}
-		b.WriteString("\nenter back up • esc back\n")
+		var b strings.Builder
+		b.WriteString(okStyle.Render(okGlyph+" Backup uploaded") + "\n\n")
+		for _, r := range rows {
+			value := strings.TrimLeft(indent(wrap(r[1], width-7), 7), " ")
+			b.WriteString(mutedStyle.Render(fmt.Sprintf("%-6s", r[0])) + " " + value + "\n")
+		}
+		return b.String()
 	}
-	return b.String()
+	return s.form.view(s.height)
 }

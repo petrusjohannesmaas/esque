@@ -1,25 +1,15 @@
 package tui
 
 import (
-	"fmt"
+	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/petrusjohannesmaas/esque/internal/config"
 )
-
-// projectActionNames lists the project view's actions, in display order.
-var projectActionNames = []string{
-	"Back up",
-	"List backups",
-	"Restore",
-	"S3 setup",
-	"Reveal passphrase",
-	"Rename",
-	"Remove",
-}
 
 const (
 	actionBackup = iota
@@ -29,150 +19,187 @@ const (
 	actionReveal
 	actionRename
 	actionRemove
+	actionCount
 )
 
-const (
-	projectActions = iota
-	projectReveal
-	projectRename
-	projectRemove
-)
+// projectActionNames lists the project menu's actions, in display order.
+var projectActionNames = [actionCount]string{
+	"Back up",
+	"List backups",
+	"Restore",
+	"S3 setup",
+	"Reveal passphrase",
+	"Rename",
+	"Remove",
+}
 
+// groupStarts holds the actions that begin a new group, so the menu puts a
+// blank line above them.
+var groupStarts = map[int]bool{actionS3: true, actionRename: true}
+
+// needsS3 reports whether an action cannot run without an S3 setup.
+func needsS3(action int) bool {
+	return action == actionBackup || action == actionListBackups || action == actionRestore
+}
+
+// projectView is the menu of actions for one project.
 type projectView struct {
-	m      *Model
-	index  int
-	cursor int
-	mode   int
-	input  textinput.Model
-	status string
+	m        *Model
+	index    int
+	cursor   int
+	flash    flash
+	pending  *flash
+	removing *confirm
+	width    int
+	height   int
 }
 
 func newProjectView(m *Model, index int) *projectView {
 	return &projectView{m: m, index: index}
 }
 
+// withFlash shows a status message once the menu opens.
+func (s *projectView) withFlash(kind flashKind, text string) *projectView {
+	s.pending = &flash{kind: kind, text: text}
+	return s
+}
+
+func (s *projectView) init() tea.Cmd {
+	if s.pending == nil {
+		return nil
+	}
+	p := s.pending
+	s.pending = nil
+	return s.flash.set(s.m, p.kind, p.text)
+}
+
+func (s *projectView) setSize(width, height int) { s.width, s.height = width, height }
+
+func (s *projectView) project() config.Project { return s.m.cfg.Projects[s.index] }
+
+func (s *projectView) crumbs() []string { return []string{"Projects", s.project().Name} }
+
+func (s *projectView) typing() bool { return false }
+
+func (s *projectView) keys() keyMap {
+	if s.removing != nil {
+		return s.removing.keys()
+	}
+	return keyMap{short: []key.Binding{keyMove, menuKeys.Choose, keyBack}}
+}
+
 func (s *projectView) update(msg tea.Msg) (screen, tea.Cmd) {
-	key, ok := msg.(tea.KeyMsg)
+	if expired, ok := msg.(flashExpiredMsg); ok {
+		s.flash.expire(expired)
+		return s, nil
+	}
+	k, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return s, nil
 	}
-	switch s.mode {
-	case projectReveal:
-		s.mode = projectActions
-		return s, nil
-	case projectRename:
-		return s.updateRename(key)
-	case projectRemove:
-		return s.updateRemove(key)
+	if s.removing != nil {
+		return s.updateRemove(k)
 	}
-	switch key.String() {
-	case "esc":
-		return newMenu(s.m), nil
-	case "up", "k":
+	switch {
+	case key.Matches(k, keyBack):
+		return newProjects(s.m), nil
+	case key.Matches(k, keyUp):
 		if s.cursor > 0 {
 			s.cursor--
 		}
-	case "down", "j":
-		if s.cursor < len(projectActionNames)-1 {
+	case key.Matches(k, keyDown):
+		if s.cursor < actionCount-1 {
 			s.cursor++
 		}
-	case "enter":
-		switch s.cursor {
-		case actionBackup:
-			if s.m.cfg.Projects[s.index].S3 == nil {
-				s.status = "Set up S3 first"
-			} else {
-				return newBackupScreen(s.m, s.index), nil
-			}
-		case actionListBackups, actionRestore:
-			if s.m.cfg.Projects[s.index].S3 == nil {
-				s.status = "Set up S3 first"
-			} else {
-				return newBackupList(s.m, s.index)
-			}
-		case actionS3:
-			return newS3Form(s.m, s.index), nil
-		case actionReveal:
-			s.mode = projectReveal
-		case actionRename:
-			s.startRename()
-		case actionRemove:
-			s.mode = projectRemove
-		}
+	case key.Matches(k, menuKeys.Choose):
+		return s.choose()
 	}
 	return s, nil
 }
 
-func (s *projectView) startRename() {
-	s.input = textinput.New()
-	s.input.Width = 60
-	s.input.Placeholder = s.m.cfg.Projects[s.index].Name
-	s.input.Focus()
-	s.status = ""
-	s.mode = projectRename
+func (s *projectView) choose() (screen, tea.Cmd) {
+	if needsS3(s.cursor) && s.project().S3 == nil {
+		return s, s.flash.set(s.m, flashWarn, warnGlyph+" Set up S3 first")
+	}
+	switch s.cursor {
+	case actionBackup:
+		return newBackupScreen(s.m, s.index), nil
+	case actionListBackups:
+		return newBackupList(s.m, s.index, false), nil
+	case actionRestore:
+		return newBackupList(s.m, s.index, true), nil
+	case actionS3:
+		return newS3Form(s.m, s.index), nil
+	case actionReveal:
+		return newReveal(s.m, s.index), nil
+	case actionRename:
+		return newRename(s.m, s.index), nil
+	case actionRemove:
+		name := s.project().Name
+		c := newConfirm(
+			"Remove "+name+"?",
+			"Forgets its passphrase and S3 setup. The database and backups stay.",
+			"remove", true, false)
+		s.removing = &c
+	}
+	return s, nil
 }
 
-func (s *projectView) updateRename(key tea.KeyMsg) (screen, tea.Cmd) {
-	switch key.String() {
-	case "esc":
-		s.input.Blur()
-		s.mode = projectActions
+func (s *projectView) updateRemove(k tea.KeyMsg) (screen, tea.Cmd) {
+	done, yes := s.removing.answer(k)
+	if !done {
 		return s, nil
-	case "enter":
-		name := strings.TrimSpace(s.input.Value())
-		old := s.m.cfg.Projects[s.index].Name
-		if err := s.m.change(func(cfg *config.Config) error { return cfg.Rename(old, name) }); err != nil {
-			s.status = err.Error()
-			return s, nil
-		}
-		return newMenu(s.m), nil
 	}
-	var cmd tea.Cmd
-	s.input, cmd = s.input.Update(key)
-	return s, cmd
-}
-
-func (s *projectView) updateRemove(key tea.KeyMsg) (screen, tea.Cmd) {
-	switch key.String() {
-	case "y":
-		name := s.m.cfg.Projects[s.index].Name
-		if err := s.m.change(func(cfg *config.Config) error { return cfg.Remove(name) }); err != nil {
-			s.status = err.Error()
-			s.mode = projectActions
-			return s, nil
-		}
-		return newMenu(s.m), nil
-	case "n", "esc":
-		s.mode = projectActions
+	s.removing = nil
+	if !yes {
+		return s, nil
 	}
-	return s, nil
+	name := s.project().Name
+	if err := s.m.change(func(cfg *config.Config) error { return cfg.Remove(name) }); err != nil {
+		return s, s.flash.set(s.m, flashErr, err.Error())
+	}
+	s.m.forget(name)
+	return newProjects(s.m), nil
 }
 
 func (s *projectView) view() string {
-	p := s.m.cfg.Projects[s.index]
+	if s.removing != nil {
+		return s.removing.view(s.width, s.height)
+	}
+	p := s.project()
+	noS3 := p.S3 == nil
 	var b strings.Builder
-	switch s.mode {
-	case projectReveal:
-		fmt.Fprintf(&b, "Passphrase for %s\n\n%s\n\npress any key to hide\n", p.Name, p.Passphrase)
-		return b.String()
-	case projectRename:
-		fmt.Fprintf(&b, "Rename %s\n\nNew name\n%s\n", p.Name, s.input.View())
-		if s.status != "" {
-			fmt.Fprintf(&b, "\n%s\n", s.status)
+	b.WriteString(titleStyle.Render(truncate(p.Name, s.width)) + "\n")
+	b.WriteString(mutedStyle.Render(truncate(filepath.Join(p.Dir, p.DB), s.width)) + "\n")
+	if noS3 {
+		b.WriteString(warnStyle.Render(wrap(warnGlyph+" S3 not set up", s.width)) + "\n")
+	}
+	b.WriteString("\n")
+	for i, name := range projectActionNames {
+		if groupStarts[i] {
+			b.WriteString("\n")
 		}
-		b.WriteString("\nenter save • esc cancel\n")
-		return b.String()
-	case projectRemove:
-		fmt.Fprintf(&b, "Remove %s? Its passphrase and S3 setup are deleted too. The database file and backups in S3 stay. (y/n)\n", p.Name)
-		return b.String()
+		selected := i == s.cursor
+		style := lipgloss.NewStyle()
+		switch {
+		case i == actionRemove:
+			style = dangerStyle
+		case noS3 && needsS3(i):
+			style = dimStyle
+		case selected:
+			style = selectedStyle
+		}
+		if selected {
+			style = style.Bold(true)
+		}
+		line := marker(selected) + style.Render(name)
+		if i == actionS3 && noS3 {
+			line += " " + warnStyle.Render(warnGlyph)
+		}
+		b.WriteString(line + "\n")
 	}
-	fmt.Fprintf(&b, "%s\n\n", p.Name)
-	for i, action := range projectActionNames {
-		fmt.Fprintf(&b, "%s %s\n", cursorMark(i == s.cursor), action)
+	if f := s.flash.view(s.width); f != "" {
+		b.WriteString("\n" + f)
 	}
-	if s.status != "" {
-		fmt.Fprintf(&b, "\n%s\n", s.status)
-	}
-	b.WriteString("\nesc back • enter choose\n")
 	return b.String()
 }
